@@ -186,7 +186,7 @@ export function PricePlanSettings(props: SidebarSettingsRenderProps): React.Reac
   }
 
   return (
-    <div>
+    <div className="dpm-settings">
       {corrupt && (
         <>
           <p className="dpm-note dpm-note--error">{translate('error.settingsCorrupt')}</p>

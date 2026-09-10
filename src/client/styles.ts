@@ -22,7 +22,14 @@ export const PRICE_MONITOR_CSS = `
 .dpm-root {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  /* The sidebar mounts a tab as a flex child of a pane that clips overflow
+     (a flex-1, min-height-0 tab container inside an overflow-hidden pane
+     content), so the tab owns its scrolling. Growing past the pane instead
+     let the bottom of the turn list be clipped with no way to reach it. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   color: var(--dsw-alias-label-primary);
   font-family: var(--dsw-font-family);
   font-size: 12px;
@@ -177,6 +184,12 @@ export const PRICE_MONITOR_CSS = `
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 6px;
 }
+
+/* The sidebar's settings popup sizes itself to its content and does not
+   scroll, so a plan list or plan form taller than the window would push its own
+   top out of reach. The panel keeps to most of the viewport and scrolls
+   inside. */
+.dpm-settings { max-height: 55vh; overflow-y: auto; overscroll-behavior: contain; }
 
 .dpm-table { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 10px; }
 .dpm-table th {
