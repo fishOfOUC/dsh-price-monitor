@@ -1,0 +1,15 @@
+# dsh-price-monitor bundle patch.
+#
+# The `dsh.bundle.patch` layer of the published npm package: installing the
+# plugin through `dsh plugin --profile <name> add dsh-price-monitor` appends
+# it to `dsh.profile.bundles`, and the profile boot merges THIS patch — a
+# single `insert` mounting the plugin row — exactly like a manual
+# cordis.patch.yml mount line. No profile file edits needed.
+#
+# Manual development mount (link: installs) works the same way: keep the
+# `dsh.profile.bundles` entry pointing at this package and this patch is
+# applied; or append the same insert row to the profile's own
+# cordis.patch.yml. Do not do both — a duplicate loader entry id fails loudly.
+- insert:
+    - id: price-monitor
+      name: 'dsh-price-monitor'

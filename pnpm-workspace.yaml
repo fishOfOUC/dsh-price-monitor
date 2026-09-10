@@ -1,0 +1,6 @@
+packages: []
+
+# node-pty (transitive, via dsh-better-sidebar) needs no native build here:
+# every dsh-better-sidebar import in this package is type-only.
+allowBuilds:
+  node-pty: false
