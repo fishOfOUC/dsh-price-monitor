@@ -146,11 +146,18 @@ function lastUsageChunk(stream: readonly AssistantStreamRecord[]): TokenUsage | 
 }
 
 /**
- * Validate one provider-reported usage sample under the same rules as the
- * harness's turn usage fold: disjoint non-negative safe-integer counts, a
- * reasoning subset that never exceeds output, and a prompt total that agrees
- * with the exact total when one is reported. Both cache buckets are required
- * unless the exact total proves the split.
+ * Validate one provider-reported usage sample: disjoint non-negative
+ * safe-integer counts, a reasoning subset that never exceeds output, and a
+ * prompt total that agrees with the exact total when one is reported.
+ *
+ * A reported cache-hit bucket is required unless the exact total proves the
+ * prompt, because without it the split between hit and miss input is unknown.
+ * The cache-write bucket is not required: sessions recorded before the bucket
+ * existed, and providers that never account writes, omit it entirely — and no
+ * plan carries a cache-write rate, so an omitted count changes no amount. A
+ * reported non-zero write count still keeps the attempt out of the money,
+ * because the tokens were billed and no rate covers them.
+ *
  * @param usage - raw provider usage.
  * @returns the normalized sample, or undefined when it cannot be proven.
  */
@@ -179,7 +186,8 @@ export function normalizeUsageSample(usage: TokenUsage): LedgerUsageSample | und
     if (cacheReadTokens !== undefined && cacheWriteTokens !== undefined && exactPrompt !== knownPrompt) {
       return undefined
     }
-  } else if (cacheReadTokens === undefined || cacheWriteTokens === undefined) {
+  } else if (cacheReadTokens === undefined) {
+    // Nothing proves even the hit bucket, so the input split is unknown.
     return undefined
   }
 

@@ -303,6 +303,33 @@ describe('usage ledger fold', () => {
     expect(attempt.uncachedInputTokens).toBeUndefined()
   })
 
+  it('prices a usage sample that never reported a cache-write bucket', () => {
+    // Sessions recorded before that bucket existed (and providers that never
+    // account writes) log only hit and miss input. Nothing billable is lost:
+    // no plan carries a cache-write rate.
+    const events = [
+      turnStart(1, 1000),
+      stepStart(1, 0, 1010),
+      requestHeader(PROVIDER, MODEL, 1020),
+      assistantMessage(1, 0, 1030, message(PROVIDER, MODEL), {
+        usage: usageOf(107, 168, { cacheReadTokens: 8064 }),
+      }),
+      stepEnd(1, 0, 1040),
+      turnEnd(1, 1050),
+    ]
+    const attempt = wire(events).turns[0]!.attempts[0]!
+    expect(attempt.completeness).toBe('complete')
+    expect(attempt.uncachedInputTokens).toBe(107)
+    expect(attempt.cacheReadTokens).toBe(8064)
+    expect(attempt.outputTokens).toBe(168)
+    // A reported non-zero write count still keeps the attempt out of the money,
+    // because those tokens were billed and no rate covers them.
+    expect(normalizeUsageSample(usageOf(10, 5, { cacheReadTokens: 0, cacheWriteTokens: 0 }))).toBeDefined()
+    expect(normalizeUsageSample(usageOf(10, 5, { cacheReadTokens: 0, cacheWriteTokens: 3 }))).toBeDefined()
+    // Without even the hit bucket, the input split is unknown.
+    expect(normalizeUsageSample(usageOf(10, 5))).toBeUndefined()
+  })
+
   it('marks a valid-usage attempt without any route as route-missing', () => {
     const events = [
       turnStart(1, 1000),

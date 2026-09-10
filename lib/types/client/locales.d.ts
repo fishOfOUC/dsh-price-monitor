@@ -56,6 +56,7 @@ export declare const en: {
     readonly 'plan.neverSynced': "Bundled snapshot";
     readonly 'plan.compare': "Same tokens under each plan";
     readonly 'plan.selected': "Selected";
+    readonly 'plan.officialEra': "Official rates";
     readonly 'turns.title': "Per-turn usage";
     readonly 'turns.hint': "Click a row for the attempt breakdown";
     readonly 'turns.turn': "Turn {turn}";
@@ -65,6 +66,7 @@ export declare const en: {
     readonly 'turns.subtotal': "Subtotal";
     readonly 'turns.noRoute': "no model";
     readonly 'turns.unpriced': "not priced";
+    readonly 'turns.pricedAs': "priced as {model}";
     readonly 'turns.complete': "complete";
     readonly 'turns.partial': "partial";
     readonly 'turns.open': "running";
@@ -90,7 +92,7 @@ export declare const en: {
     readonly 'refresh.confirm': "Apply as new official versions";
     readonly 'refresh.applyNote': "Applying replaces your official plans with these versions. Manual plans are kept.";
     readonly 'settings.title': "Price monitor plans";
-    readonly 'settings.hint': "Official plans are read-only; duplicate one to edit its rates.";
+    readonly 'settings.hint': "An official plan keeps the fetched page’s rates: duplicate it to edit rates, or delete it once you have kept your own copy.";
     readonly 'settings.selected': "Selected plan";
     readonly 'settings.basis': "Every request of the session is priced at the selected plan’s rates.";
     readonly 'settings.plans': "Plans";
@@ -104,6 +106,9 @@ export declare const en: {
     readonly 'settings.effectiveTo': "Rate period until";
     readonly 'settings.ratePeriodHint': "The rate period only labels the plan card; leave either end empty when it is unknown. It never changes an amount.";
     readonly 'settings.peakTiers': "Peak/off-peak tiers";
+    readonly 'settings.modelGroups': "Model groups (one rate table each)";
+    readonly 'settings.addGroup': "Add model group";
+    readonly 'settings.removeGroup': "Remove this group";
     readonly 'settings.cacheMiss': "Cache miss";
     readonly 'settings.cacheHit': "Cache hit";
     readonly 'settings.output': "Output";

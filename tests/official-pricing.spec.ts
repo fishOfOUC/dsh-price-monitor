@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { diffOfficialPricing, parseOfficialPricing } from '../src/official-pricing.ts'
-import { officialSeedPlans } from '../src/pricing/official-seed.ts'
+import { currentEraPlan } from '../src/pricing/official-seed.ts'
 
 const fixture = readFileSync(fileURLToPath(new URL('../fixtures/official-pricing.html', import.meta.url)), 'utf8')
 
@@ -38,16 +38,17 @@ describe('official pricing parser', () => {
   it('agrees with the shipped seed, so a refresh of an unchanged page is empty', () => {
     // The seed is a hand-kept copy of this page: if they ever disagree, the
     // refresh would report a change the user cannot act on.
-    expect(diffOfficialPricing(officialSeedPlans.map(plan => ({
-      model: plan.modelIds[0]!,
-      cacheHit: plan.ratesPerMillion.offPeak.cacheHit,
-      cacheMiss: plan.ratesPerMillion.offPeak.cacheMiss,
-      output: plan.ratesPerMillion.offPeak.output,
-      peakCacheHit: plan.ratesPerMillion.peak!.cacheHit,
-      peakCacheMiss: plan.ratesPerMillion.peak!.cacheMiss,
-      peakOutput: plan.ratesPerMillion.peak!.output,
+    const era = currentEraPlan()
+    expect(diffOfficialPricing(era.entries.map(entry => ({
+      model: entry.models[0]!,
+      cacheHit: entry.offPeak.cacheHit,
+      cacheMiss: entry.offPeak.cacheMiss,
+      output: entry.offPeak.output,
+      peakCacheHit: entry.peak!.cacheHit,
+      peakCacheMiss: entry.peak!.cacheMiss,
+      peakOutput: entry.peak!.output,
     })), parseOfficialPricing(fixture)!.models)).toEqual({ addedModels: [], removedModels: [], changed: [] })
-    for (const plan of officialSeedPlans) expect(plan.currency).toBe('CNY')
+    expect(era.currency).toBe('CNY')
   })
 
   it('rejects a changed amount (breaks the peak/off-peak 2x relation)', () => {

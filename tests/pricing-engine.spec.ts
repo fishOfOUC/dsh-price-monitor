@@ -1,14 +1,15 @@
 /**
- * Pricing-engine tests: exact decimal math, peak boundaries, the selected plan
- * as the sole pricing basis, and partial-propagation semantics.
+ * Pricing-engine tests: exact decimal math, peak boundaries, the selected era
+ * plan as the sole pricing basis with one rate table per model group, and
+ * partial-propagation semantics.
  */
 
 import { Decimal } from 'decimal.js'
 import { describe, expect, it } from 'vitest'
 import type { AttemptUsageRow, PriceMonitorUsageView, TurnUsageRow } from '../src/projection-types.ts'
-import { isPeak, priceLedger } from '../src/pricing/engine.ts'
-import { parsePersistedSettings, pricingPlanSchema, type PeakSchedule, type PersistedSettings, type PricingPlan } from '../src/pricing/schema.ts'
-import { defaultSettings, expandOfficialModelIds, officialSeedPlans } from '../src/pricing/official-seed.ts'
+import { entryFor, isPeak, priceLedger } from '../src/pricing/engine.ts'
+import { parsePersistedSettings, pricingPlanSchema, type PeakSchedule, type PersistedSettings, type PricingPlan, type RateBand } from '../src/pricing/schema.ts'
+import { currentEraPlan, defaultSettings, expandOfficialModelIds, officialSeedPlans } from '../src/pricing/official-seed.ts'
 
 const SCHEDULE: PeakSchedule = {
   timezone: 'UTC',
@@ -21,26 +22,44 @@ const flashPlan = (over: Partial<PricingPlan> = {}): PricingPlan => ({
   name: 'flash',
   source: 'manual',
   provider: 'deepseek-official',
-  modelIds: ['deepseek-v4-flash'],
   currency: 'USD',
   effectiveFrom: '2026-09-10',
   schedule: SCHEDULE,
-  ratesPerMillion: {
+  entries: [{
+    models: ['deepseek-v4-flash'],
     offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' },
     peak: { cacheMiss: '0.44', cacheHit: '0.014', output: '1.32' },
-  },
+  }],
   ...over,
 })
 
 const proPlan = (over: Partial<PricingPlan> = {}): PricingPlan => flashPlan({
   id: 'p-pro',
   name: 'pro',
-  modelIds: ['deepseek-v4-pro'],
-  ratesPerMillion: {
+  entries: [{
+    models: ['deepseek-v4-pro'],
     offPeak: { cacheMiss: '0.66', cacheHit: '0.022', output: '1.98' },
     peak: { cacheMiss: '1.32', cacheHit: '0.044', output: '3.96' },
-  },
+  }],
   ...over,
+})
+
+/** A plan pricing two models, each with its own rate table. */
+const twoModelPlan = (): PricingPlan => flashPlan({
+  id: 'p-era',
+  name: 'era',
+  entries: [
+    {
+      models: ['deepseek-v4-flash'],
+      offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' },
+      peak: { cacheMiss: '0.44', cacheHit: '0.014', output: '1.32' },
+    },
+    {
+      models: ['deepseek-v4-pro'],
+      offPeak: { cacheMiss: '0.66', cacheHit: '0.022', output: '1.98' },
+      peak: { cacheMiss: '1.32', cacheHit: '0.044', output: '3.96' },
+    },
+  ],
 })
 
 function attempt(over: Partial<AttemptUsageRow> = {}): AttemptUsageRow {
@@ -70,7 +89,7 @@ function ledgerOf(rows: AttemptUsageRow[]): PriceMonitorUsageView {
 /** Settings selecting the first plan unless told otherwise. */
 function settingsOf(plans: PricingPlan[], selectedPlanId?: string): PersistedSettings {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     selectedPlanId: selectedPlanId ?? plans[0]!.id,
     plans,
   }
@@ -106,8 +125,7 @@ describe('the selected plan is the pricing basis', () => {
     const rows = [
       attempt({ id: '1:0:0', uncachedInputTokens: 1_000_000 }),
       // A different model, an unknown id, a route never recorded, and a
-      // third-party gateway: the point of switching plans is "what would these
-      // tokens have cost at these rates", so none of them may gate it.
+      // third-party gateway: the era prices them all, so none may vanish.
       attempt({ id: '1:1:0', model: 'deepseek-v4-pro', uncachedInputTokens: 1_000_000 }),
       attempt({ id: '1:2:0', model: 'renamed-flash', uncachedInputTokens: 1_000_000 }),
       attempt({ id: '1:3:0', model: undefined, completeness: 'route-missing', uncachedInputTokens: 1_000_000 }),
@@ -123,6 +141,37 @@ describe('the selected plan is the pricing basis', () => {
     expect(result.cost.total.toFixed()).toBe('1.1')
   })
 
+  it('prices each model by the group it belongs to inside one plan', () => {
+    const rows = [
+      attempt({ id: '1:0:0', model: 'deepseek-v4-flash', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 }),
+      attempt({ id: '1:1:0', model: 'deepseek-v4-pro', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 }),
+    ]
+    const result = priceLedger(ledgerOf(rows), settingsOf([twoModelPlan()]))
+    const [flash, pro] = result.turns[0]!.attempts
+    // Each attempt used its own model's table, and neither was substituted.
+    expect(flash!.cost?.total.toFixed()).toBe('0.22')
+    expect(pro!.cost?.total.toFixed()).toBe('0.66')
+    expect(flash!.pricedAs).toBeUndefined()
+    expect(pro!.pricedAs).toBeUndefined()
+    expect(result.cost.total.toFixed()).toBe('0.88')
+  })
+
+  it('falls back to the first group for a model the era does not list, and says which', () => {
+    const rows = [
+      attempt({ id: '1:0:0', model: 'deepseek-v4-pro', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 }),
+      attempt({ id: '1:1:0', model: undefined, completeness: 'route-missing', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 }),
+    ]
+    // The flash-only era prices an unlisted model at its headline rates, and
+    // the row records the substitution instead of hiding it.
+    const result = priceLedger(ledgerOf(rows), settingsOf([flashPlan()]))
+    expect(result.coverage.priced).toBe(2)
+    for (const entry of result.turns[0]!.attempts) {
+      expect(entry.cost?.total.toFixed()).toBe('0.22')
+      expect(entry.pricedAs).toBe('deepseek-v4-flash')
+    }
+    expect(entryFor(flashPlan(), undefined).models[0]).toBe('deepseek-v4-flash')
+  })
+
   it('reprices every amount when the selected plan changes', () => {
     const row = attempt({
       startedAt: utc(2026, 9, 14, 1, 30), // Monday peak window
@@ -135,7 +184,7 @@ describe('the selected plan is the pricing basis', () => {
     const atFlash = priceLedger(ledgerOf([row]), settingsOf(plans, 'p-flash'))
     const atPro = priceLedger(ledgerOf([row]), settingsOf(plans, 'p-pro'))
 
-    // Flash peak: 1.0×0.44·… = 1 × 0.44 + 2 × 0.014 + 0.5 × 1.32
+    // Flash peak: 1 × 0.44 + 2 × 0.014 + 0.5 × 1.32
     expect(atFlash.cost.total.toFixed()).toBe('1.128')
     expect(atFlash.turns[0]!.cost.total.toFixed()).toBe('1.128')
     // Pro peak: 1 × 1.32 + 2 × 0.044 + 0.5 × 3.96
@@ -147,8 +196,8 @@ describe('the selected plan is the pricing basis', () => {
   })
 
   it('prices a plan’s rate period as a label, never as a gate', () => {
-    // The window says when these rates applied; an attempt outside it is still
-    // priced at them, because the user selected this plan to price the session.
+    // The period says when these rates applied; an attempt outside it is still
+    // priced at them, because the user selected this era to price the session.
     const plan = flashPlan({ effectiveFrom: '2026-09-10', effectiveTo: '2026-09-12' })
     const row = attempt({ startedAt: utc(2025, 1, 6, 0, 0), uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
     const result = priceLedger(ledgerOf([row]), settingsOf([plan]))
@@ -256,10 +305,13 @@ describe('partial propagation', () => {
     expect(result.coverage.peakTiered).toBe(false)
   })
 
-  it('reports a plan without peak tiers as untiered', () => {
+  it('reports an era with a flat price as untiered', () => {
     const flat = flashPlan({
       schedule: null,
-      ratesPerMillion: { offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' } },
+      entries: [{
+        models: ['deepseek-v4-flash'],
+        offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' },
+      }],
     })
     const row = attempt({ uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
     const result = priceLedger(ledgerOf([row]), settingsOf([flat]))
@@ -269,24 +321,49 @@ describe('partial propagation', () => {
   })
 })
 
-describe('shipped official snapshot', () => {
-  it('prices exactly two models, with one flash price covering its ids', () => {
-    expect(officialSeedPlans).toHaveLength(2)
-    const [flash, pro] = officialSeedPlans
-    expect(flash!.modelIds).toEqual(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])
-    expect(pro!.modelIds).toEqual(['deepseek-v4-pro'])
-    // The yuan figures the Chinese page prints, which are the primary
-    // published numbers; the English page prints their rounded USD conversion.
-    expect(flash!.ratesPerMillion).toEqual({
-      offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '4' },
-      peak: { cacheMiss: '2', cacheHit: '0.04', output: '8' },
-    })
-    expect(pro!.ratesPerMillion).toEqual({
-      offPeak: { cacheMiss: '4.5', cacheHit: '0.15', output: '13.5' },
-      peak: { cacheMiss: '9', cacheHit: '0.3', output: '27' },
-    })
-    expect(flash!.currency).toBe('CNY')
-    expect(flash!.provenance?.url).toContain('/zh-cn/')
+describe('shipped era catalog', () => {
+  it('ships the three published flash eras, oldest first, with the one in force selected', () => {
+    expect(officialSeedPlans.map(plan => plan.name)).toEqual([
+      '涨价前（8-17 前）',
+      '涨价后（8-17 起）',
+      '降价后（现行官方价）',
+    ])
+    expect(defaultSettings().selectedPlanId).toBe(currentEraPlan().id)
+    expect(currentEraPlan().name).toBe('降价后（现行官方价）')
+    for (const plan of officialSeedPlans) {
+      expect(plan.currency).toBe('CNY')
+      expect(plan.provenance?.url).toContain('/zh-cn/')
+    }
+  })
+
+  it('prices the flash ids from one group in every era', () => {
+    for (const plan of officialSeedPlans) {
+      expect(plan.entries[0]!.models).toEqual(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])
+    }
+    // The era in force prices both published models, each from its own table.
+    expect(currentEraPlan().entries.map(entry => entry.models[0])).toEqual(['deepseek-flash', 'deepseek-v4-pro'])
+  })
+
+  it('carries each era’s own rates, flat or tiered', () => {
+    const [before, raised, current] = officialSeedPlans
+    expect(before!.schedule).toBeNull()
+    expect(before!.entries[0]!.offPeak).toEqual({ cacheMiss: '1', cacheHit: '0.02', output: '2' })
+    expect(before!.entries[0]!.peak).toBeUndefined()
+    expect(raised!.entries[0]!.offPeak).toEqual({ cacheMiss: '1.5', cacheHit: '0.05', output: '4.5' })
+    expect(raised!.entries[0]!.peak).toEqual({ cacheMiss: '3', cacheHit: '0.1', output: '9' })
+    expect(current!.entries[0]!.offPeak).toEqual({ cacheMiss: '1', cacheHit: '0.02', output: '4' })
+    expect(current!.entries[0]!.peak).toEqual({ cacheMiss: '2', cacheHit: '0.04', output: '8' })
+    expect(current!.entries[1]!.offPeak).toEqual({ cacheMiss: '4.5', cacheHit: '0.15', output: '13.5' })
+    expect(current!.entries[1]!.peak).toEqual({ cacheMiss: '9', cacheHit: '0.3', output: '27' })
+  })
+
+  it('prices a session at the selected era’s shipped rates', () => {
+    // An id no group names is still priced: the era's headline group covers it.
+    const row = attempt({ model: 'deepseek-v4.1-flash-expires-on-0910', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
+    const priced = priceLedger(ledgerOf([row]), defaultSettings())
+    expect(priced.coverage.priced).toBe(1)
+    expect(priced.cost.total.toFixed()).toBe('1')
+    expect(priced.turns[0]!.attempts[0]!.pricedAs).toBe('deepseek-flash')
   })
 
   it('expands a page-listed flash id to the whole family and leaves others alone', () => {
@@ -295,42 +372,38 @@ describe('shipped official snapshot', () => {
     expect(expandOfficialModelIds('deepseek-v4-pro')).toEqual(['deepseek-v4-pro'])
     expect(expandOfficialModelIds('some-future-model')).toEqual(['some-future-model'])
   })
-
-  it('prices a session at the selected plan’s shipped rates', () => {
-    // An id no plan names is still priced: the selected plan is the basis, so
-    // a deployment's own model id needs no mapping.
-    const row = attempt({ model: 'deepseek-v4.1-flash-expires-on-0910', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
-    const priced = priceLedger(ledgerOf([row]), defaultSettings())
-    expect(priced.coverage.priced).toBe(1)
-    expect(priced.cost.total.toFixed()).toBe('1')
-  })
 })
 
 describe('settings schema', () => {
-  it('accepts the shipped official seed and round-trips a manual plan', () => {
+  it('accepts the shipped eras and round-trips them', () => {
     for (const plan of officialSeedPlans) {
       expect(pricingPlanSchema.safeParse(plan).success).toBe(true)
-      // A snapshot observes rates; it does not learn when they began.
-      expect(plan.effectiveFrom).toBeUndefined()
-      expect(plan.provenance?.fetchedAt).toBeDefined()
     }
     const settings = defaultSettings()
     expect(parsePersistedSettings(settings)).toEqual(settings)
   })
 
   it('rejects negative rates, malformed windows, overlapping windows, and a schedule without a peak band', () => {
-    expect(pricingPlanSchema.safeParse(flashPlan({
-      ratesPerMillion: { offPeak: { cacheMiss: '-0.22', cacheHit: '0.007', output: '0.66' }, peak: { cacheMiss: '0.44', cacheHit: '0.014', output: '1.32' } },
-    })).success).toBe(false)
+    const withRates = (offPeak: RateBand, peak?: RateBand): PricingPlan => flashPlan({
+      entries: [{ models: ['deepseek-v4-flash'], offPeak, ...peak === undefined ? {} : { peak } }],
+    })
+    expect(pricingPlanSchema.safeParse(withRates({ cacheMiss: '-0.22', cacheHit: '0.007', output: '0.66' }, { cacheMiss: '0.44', cacheHit: '0.014', output: '1.32' })).success).toBe(false)
     expect(pricingPlanSchema.safeParse(flashPlan({ schedule: { ...SCHEDULE, peakWindows: [['04:00', '01:00']] } })).success).toBe(false)
     expect(pricingPlanSchema.safeParse(flashPlan({ schedule: { ...SCHEDULE, peakWindows: [['01:00', '03:00'], ['02:00', '04:00']] } })).success).toBe(false)
-    expect(pricingPlanSchema.safeParse(flashPlan({ schedule: SCHEDULE, ratesPerMillion: { offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' } } })).success).toBe(false)
-    expect(pricingPlanSchema.safeParse(flashPlan({ modelIds: [] })).success).toBe(false)
-    // Either end of the rate period may stand alone: an official snapshot knows
-    // no start, and a superseded rate knows its end without its beginning.
+    // A schedule needs a peak band per group, and a peak band needs a schedule.
+    expect(pricingPlanSchema.safeParse(withRates({ cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' })).success).toBe(false)
+    expect(pricingPlanSchema.safeParse(flashPlan({ schedule: null })).success).toBe(false)
+    // A group must name at least one model, and no model may be in two groups.
+    expect(pricingPlanSchema.safeParse(flashPlan({ entries: [{ models: [], offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '4' }, peak: { cacheMiss: '2', cacheHit: '0.04', output: '8' } }] })).success).toBe(false)
+    expect(pricingPlanSchema.safeParse(flashPlan({
+      entries: [
+        { models: ['deepseek-v4-flash'], offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '4' }, peak: { cacheMiss: '2', cacheHit: '0.04', output: '8' } },
+        { models: ['deepseek-v4-flash'], offPeak: { cacheMiss: '4.5', cacheHit: '0.15', output: '13.5' }, peak: { cacheMiss: '9', cacheHit: '0.3', output: '27' } },
+      ],
+    })).success).toBe(false)
+    // Either end of the rate period may stand alone; an inverted one may not.
     expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: undefined })).success).toBe(true)
     expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: undefined, effectiveTo: '2026-08-16' })).success).toBe(true)
-    // A period that ends before it starts is still refused.
     expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: '2026-09-10', effectiveTo: '2026-08-16' })).success).toBe(false)
   })
 
@@ -348,37 +421,76 @@ describe('settings schema', () => {
     expect(cny.cost.total.toFixed()).toBe(usd.cost.total.toFixed())
   })
 
-  it('upgrades a v1 blob, keeping its plans and selection', () => {
-    const plans = [...officialSeedPlans]
-    const upgraded = parsePersistedSettings({
-      schemaVersion: 1,
-      selectedPlanId: plans[1]!.id,
-      mode: 'effective',
-      plans,
-      aliases: { 'deepseek-v4.1-flash-expires-on-0910': 'deepseek-v4-flash-vision-exp' },
-      lastOfficialRefresh: '2026-09-10T00:00:00.000Z',
-    })
-    expect(upgraded).toEqual({
+  it('reads a plan stored before a plan could price several models', () => {
+    const stored = {
       schemaVersion: 2,
-      selectedPlanId: plans[1]!.id,
-      plans,
-      lastOfficialRefresh: '2026-09-10T00:00:00.000Z',
+      selectedPlanId: 'p-legacy',
+      plans: [{
+        id: 'p-legacy',
+        name: 'legacy',
+        source: 'manual',
+        provider: 'deepseek-official',
+        modelIds: ['deepseek-v4-flash', 'renamed-flash'],
+        currency: 'CNY',
+        schedule: null,
+        ratesPerMillion: { offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '4' } },
+      }],
+    }
+    expect(parsePersistedSettings(stored)).toEqual({
+      schemaVersion: 3,
+      selectedPlanId: 'p-legacy',
+      plans: [{
+        id: 'p-legacy',
+        name: 'legacy',
+        source: 'manual',
+        provider: 'deepseek-official',
+        currency: 'CNY',
+        schedule: null,
+        entries: [{ models: ['deepseek-v4-flash', 'renamed-flash'], offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '4' } }],
+      }],
     })
+  })
+
+  it('merges the official plans one fetch produced into the single era it describes', () => {
+    const fetched = { url: 'u', fetchedAt: '2026-09-10T00:00:00.000Z', contentHash: 'same' }
+    const official = (id: string, model: string, rates: RateBand): unknown => ({
+      id,
+      name: `${model} · official`,
+      source: 'official',
+      provider: 'deepseek-official',
+      modelIds: [model],
+      currency: 'CNY',
+      schedule: null,
+      ratesPerMillion: { offPeak: rates },
+      provenance: fetched,
+    })
+    const parsed = parsePersistedSettings({
+      schemaVersion: 2,
+      selectedPlanId: 'official:pro',
+      plans: [
+        official('official:flash', 'deepseek-flash', { cacheMiss: '1', cacheHit: '0.02', output: '4' }),
+        official('official:pro', 'deepseek-v4-pro', { cacheMiss: '4.5', cacheHit: '0.15', output: '13.5' }),
+      ],
+    })
+    expect(parsed!.plans).toHaveLength(1)
+    // The merged plan keeps the selected plan's identity and both rate tables.
+    expect(parsed!.plans[0]!.id).toBe('official:flash')
+    expect(parsed!.plans[0]!.entries.map(entry => entry.models[0])).toEqual(['deepseek-flash', 'deepseek-v4-pro'])
+    expect(parsed!.selectedPlanId).toBe('official:flash')
   })
 
   it('reads the retired keys a merged write leaves behind', () => {
     // Settings writes merge plain objects recursively, so the keys dropped from
-    // this schema stay in the stored document after the first write — the exact
-    // blob a version 1 install has on disk once it switches plans.
+    // this schema stay in the stored document after the first write.
     const plans = [...officialSeedPlans]
     const read = parsePersistedSettings({
-      schemaVersion: 2,
+      schemaVersion: 3,
       selectedPlanId: plans[1]!.id,
       mode: 'effective',
       plans,
       aliases: { 'deepseek-v4.1-flash-expires-on-0910': 'deepseek-flash' },
     })
-    expect(read).toEqual({ schemaVersion: 2, selectedPlanId: plans[1]!.id, plans })
+    expect(read).toEqual({ schemaVersion: 3, selectedPlanId: plans[1]!.id, plans })
   })
 
   it('returns undefined for a corrupted blob', () => {

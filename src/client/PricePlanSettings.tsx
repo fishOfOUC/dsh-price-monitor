@@ -14,7 +14,7 @@
 
 import { useState } from 'react'
 import type { SidebarSettingsRenderProps } from 'dsh-better-sidebar/client/service'
-import type { Currency } from '../pricing/index.ts'
+import type { Currency, PlanEntry, RateBand } from '../pricing/index.ts'
 import {
   defaultSettings,
   parsePersistedSettings,
@@ -25,15 +25,9 @@ import { t as translate, type PriceMonitorKey, type Translate } from './locales.
 import { CATALOG_KEY, SETTINGS_KEY } from './settings-write.ts'
 import { CURRENCIES, SYMBOL } from './money.ts'
 
-/** An empty manual-plan draft (rates deliberately blank so a typo is visible). */
-interface Draft {
-  id?: string
-  name: string
+/** One model group's row in the draft: the ids it covers and their rates. */
+interface EntryDraft {
   models: string
-  currency: Currency
-  effectiveFrom: string
-  effectiveTo: string
-  peak: boolean
   cacheMiss: string
   cacheHit: string
   output: string
@@ -42,19 +36,28 @@ interface Draft {
   peakOutput: string
 }
 
+/** A plan draft: an era with one row per model group it prices. */
+interface Draft {
+  id?: string
+  name: string
+  currency: Currency
+  effectiveFrom: string
+  effectiveTo: string
+  peak: boolean
+  entries: EntryDraft[]
+}
+
+function entryDraft(over: Partial<EntryDraft> = {}): EntryDraft {
+  return { models: '', cacheMiss: '', cacheHit: '', output: '', peakMiss: '', peakHit: '', peakOutput: '', ...over }
+}
+
 const EMPTY_DRAFT: Draft = {
   name: '',
-  models: 'deepseek-flash',
-  currency: 'USD',
+  currency: 'CNY',
   effectiveFrom: '',
   effectiveTo: '',
   peak: true,
-  cacheMiss: '0.22',
-  cacheHit: '0.007',
-  output: '0.66',
-  peakMiss: '0.44',
-  peakHit: '0.014',
-  peakOutput: '1.32',
+  entries: [entryDraft({ models: 'deepseek-flash' })],
 }
 
 /** A decimal rate or undefined when the input is not a non-negative decimal. */
@@ -63,37 +66,47 @@ function parseRate(value: string): string | undefined {
   return /^(0|[1-9]\d*)(\.\d+)?$/.test(trimmed) ? trimmed : undefined
 }
 
+/** One row's three rates for a band, or undefined when any input is not a rate. */
+function rateBandOf(draft: EntryDraft, keys: readonly [keyof EntryDraft, keyof EntryDraft, keyof EntryDraft]): RateBand | undefined {
+  const cacheMiss = parseRate(draft[keys[0]])
+  const cacheHit = parseRate(draft[keys[1]])
+  const output = parseRate(draft[keys[2]])
+  if (cacheMiss === undefined || cacheHit === undefined || output === undefined) return undefined
+  return { cacheMiss, cacheHit, output }
+}
+
+/** One draft row as a plan entry; undefined when any of its fields is invalid. */
+function entryFromDraft(draft: EntryDraft, peak: boolean): PlanEntry | undefined {
+  const models = draft.models.split(',').map(value => value.trim()).filter(value => value !== '')
+  if (models.length === 0) return undefined
+  const offPeak = rateBandOf(draft, ['cacheMiss', 'cacheHit', 'output'])
+  if (offPeak === undefined) return undefined
+  if (!peak) return { models, offPeak }
+  const peakBand = rateBandOf(draft, ['peakMiss', 'peakHit', 'peakOutput'])
+  if (peakBand === undefined) return undefined
+  return { models, offPeak, peak: peakBand }
+}
+
 /** Build a plan from a draft; undefined when any field is invalid. */
 function planFromDraft(draft: Draft, fallbackId: string): PricingPlan | undefined {
   const name = draft.name.trim()
   if (name === '') return undefined
-  const modelIds = draft.models.split(',').map(value => value.trim()).filter(value => value !== '')
-  if (modelIds.length === 0) return undefined
-  const offPeak = {
-    cacheMiss: parseRate(draft.cacheMiss),
-    cacheHit: parseRate(draft.cacheHit),
-    output: parseRate(draft.output),
+  const entries: PlanEntry[] = []
+  for (const row of draft.entries) {
+    const entry = entryFromDraft(row, draft.peak)
+    if (entry === undefined) return undefined
+    entries.push(entry)
   }
-  const peak = {
-    cacheMiss: parseRate(draft.peakMiss),
-    cacheHit: parseRate(draft.peakHit),
-    output: parseRate(draft.peakOutput),
-  }
-  if (draft.peak && (peak.cacheMiss === undefined || peak.cacheHit === undefined || peak.output === undefined)) {
-    return undefined
-  }
-  if (offPeak.cacheMiss === undefined || offPeak.cacheHit === undefined || offPeak.output === undefined) {
-    return undefined
-  }
+  if (entries.length === 0) return undefined
   return {
     id: draft.id ?? fallbackId,
     name,
     source: 'manual',
     provider: 'deepseek-official',
-    modelIds,
     currency: draft.currency,
+    entries,
     // The rate period is a label for the plan card, and either end may stand
-    // alone: a superseded rate knows when it ended, not when it began.
+    // alone: a superseded era knows when it ended, not when it began.
     ...draft.effectiveFrom.trim() === '' ? {} : { effectiveFrom: draft.effectiveFrom.trim() },
     ...draft.effectiveTo.trim() === '' ? {} : { effectiveTo: draft.effectiveTo.trim() },
     schedule: draft.peak
@@ -103,27 +116,27 @@ function planFromDraft(draft: Draft, fallbackId: string): PricingPlan | undefine
         peakWindows: [['01:00', '04:00'], ['06:00', '10:00']],
       }
       : null,
-    ratesPerMillion: draft.peak ? { offPeak, peak } : { offPeak },
-  } as PricingPlan
+  }
 }
 
 /** A fresh draft describing an existing plan for editing. */
 function draftOf(plan: PricingPlan): Draft {
-  const peak = plan.ratesPerMillion.peak
   return {
     id: plan.source === 'official' ? undefined : plan.id,
     name: plan.source === 'official' ? `${plan.name} (copy)` : plan.name,
-    models: plan.modelIds.join(', '),
     currency: plan.currency,
     effectiveFrom: plan.effectiveFrom ?? '',
     effectiveTo: plan.effectiveTo ?? '',
-    peak: peak !== undefined,
-    cacheMiss: plan.ratesPerMillion.offPeak.cacheMiss,
-    cacheHit: plan.ratesPerMillion.offPeak.cacheHit,
-    output: plan.ratesPerMillion.offPeak.output,
-    peakMiss: peak?.cacheMiss ?? '0',
-    peakHit: peak?.cacheHit ?? '0',
-    peakOutput: peak?.output ?? '0',
+    peak: plan.entries.some(entry => entry.peak !== undefined),
+    entries: plan.entries.map(entry => entryDraft({
+      models: entry.models.join(', '),
+      cacheMiss: entry.offPeak.cacheMiss,
+      cacheHit: entry.offPeak.cacheHit,
+      output: entry.offPeak.output,
+      peakMiss: entry.peak?.cacheMiss ?? '',
+      peakHit: entry.peak?.cacheHit ?? '',
+      peakOutput: entry.peak?.output ?? '',
+    })),
   }
 }
 
@@ -211,28 +224,28 @@ export function PricePlanSettings(props: SidebarSettingsRenderProps): React.Reac
             <button type="button" className="dpm-mini" onClick={() => setDraft(draftOf(plan))}>
               {plan.source === 'official' ? translate('action.copy') : translate('settings.edit')}
             </button>
-            {plan.source === 'manual' && (
-              <button
-                type="button"
-                className="dpm-mini"
-                disabled={catalog.plans.length <= 1}
-                onClick={() => {
-                  if (catalog.plans.length <= 1) return
-                  edit(current => {
-                    const plans = current.plans.filter(existing => existing.id !== plan.id)
-                    return {
-                      ...current,
-                      plans,
-                      selectedPlanId: plans.some(existing => existing.id === current.selectedPlanId)
-                        ? current.selectedPlanId
-                        : plans[0]!.id,
-                    }
-                  })
-                }}
-              >
-                {translate('action.delete')}
-              </button>
-            )}
+            {/* An official plan can be dropped too: it is one fetched era, and
+                a refresh re-creates it after a copy has been named and kept. */}
+            <button
+              type="button"
+              className="dpm-mini"
+              disabled={catalog.plans.length <= 1}
+              onClick={() => {
+                if (catalog.plans.length <= 1) return
+                edit(current => {
+                  const plans = current.plans.filter(existing => existing.id !== plan.id)
+                  return {
+                    ...current,
+                    plans,
+                    selectedPlanId: plans.some(existing => existing.id === current.selectedPlanId)
+                      ? current.selectedPlanId
+                      : plans[0]!.id,
+                  }
+                })
+              }}
+            >
+              {translate('action.delete')}
+            </button>
           </span>
         </div>
       ))}
@@ -259,7 +272,12 @@ export function PricePlanSettings(props: SidebarSettingsRenderProps): React.Reac
   )
 }
 
-/** The manual-plan form. */
+/**
+ * The manual-plan form: the era's own fields, then one row per model group it
+ * prices. A plan that prices several models (an era whose models differ in
+ * rate, or one whose retired model is billed as its successor) needs one row
+ * per group, so a row carries its own ids and its own rates.
+ */
 function DraftEditor({ draft, t, onChange, onCancel, onSave }: {
   draft: Draft
   t: Translate
@@ -267,23 +285,48 @@ function DraftEditor({ draft, t, onChange, onCancel, onSave }: {
   onCancel: () => void
   onSave: () => void
 }): React.ReactElement {
-  const field = (key: keyof Draft, label: PriceMonitorKey, type = 'text'): React.ReactElement => (
+  const field = (key: 'name' | 'effectiveFrom' | 'effectiveTo', label: PriceMonitorKey): React.ReactElement => (
     <div className="dpm-field">
       <label className="dpm-field__label" htmlFor={`dpm-${key}`}>{t(label)}</label>
       <input
         id={`dpm-${key}`}
         className="dpm-input"
-        type={type}
-        value={String(draft[key] ?? '')}
+        type="text"
+        value={draft[key]}
         onChange={(event) => onChange({ ...draft, [key]: event.target.value })}
       />
     </div>
   )
+  const rateField = (
+    index: number,
+    key: keyof EntryDraft,
+    label: PriceMonitorKey,
+  ): React.ReactElement => (
+    <div className="dpm-field">
+      <label className="dpm-field__label" htmlFor={`dpm-${index}-${key}`}>{t(label)}</label>
+      <input
+        id={`dpm-${index}-${key}`}
+        className="dpm-input"
+        type="text"
+        value={draft.entries[index]![key]}
+        onChange={(event) => onChange({
+          ...draft,
+          entries: draft.entries.map((entry, position) =>
+            position === index ? { ...entry, [key]: event.target.value } : entry),
+        })}
+      />
+    </div>
+  )
+  const setEntry = (index: number, value: string): void => {
+    onChange({
+      ...draft,
+      entries: draft.entries.map((entry, position) => position === index ? { ...entry, models: value } : entry),
+    })
+  }
   return (
     <div className="dpm-dialog">
       <div className="dpm-dialog__title">{t(draft.id === undefined ? 'settings.add' : 'settings.editTitle')}</div>
       {field('name', 'settings.name')}
-      {field('models', 'settings.models')}
       <div className="dpm-field">
         <label className="dpm-field__label" htmlFor="dpm-currency">{t('settings.currency')}</label>
         <select
@@ -297,7 +340,7 @@ function DraftEditor({ draft, t, onChange, onCancel, onSave }: {
       </div>
       <div className="dpm-grid2">
         {field('effectiveFrom', 'settings.effectiveFrom')}
-        {/* Either end may stand alone: a superseded rate knows when it ended
+        {/* Either end may stand alone: a superseded era knows when it ended
             without knowing when it began. */}
         {field('effectiveTo', 'settings.effectiveTo')}
       </div>
@@ -310,18 +353,56 @@ function DraftEditor({ draft, t, onChange, onCancel, onSave }: {
         />
         {t('settings.peakTiers')}
       </label>
-      <div className="dpm-grid3">
-        {field('cacheMiss', 'settings.cacheMiss')}
-        {field('cacheHit', 'settings.cacheHit')}
-        {field('output', 'settings.output')}
-      </div>
-      {draft.peak && (
-        <div className="dpm-grid3">
-          {field('peakMiss', 'settings.peakMiss')}
-          {field('peakHit', 'settings.peakHit')}
-          {field('peakOutput', 'settings.peakOutput')}
+      <p className="dpm-field__label">{t('settings.modelGroups')}</p>
+      {draft.entries.map((entry, index) => (
+        <div className="dpm-entry" key={index}>
+          <div className="dpm-field">
+            <label className="dpm-field__label" htmlFor={`dpm-${index}-models`}>{t('settings.models')}</label>
+            <input
+              id={`dpm-${index}-models`}
+              className="dpm-input"
+              type="text"
+              value={entry.models}
+              onChange={(event) => setEntry(index, event.target.value)}
+            />
+          </div>
+          <div className="dpm-grid3">
+            {rateField(index, 'cacheMiss', 'settings.cacheMiss')}
+            {rateField(index, 'cacheHit', 'settings.cacheHit')}
+            {rateField(index, 'output', 'settings.output')}
+          </div>
+          {draft.peak && (
+            <div className="dpm-grid3">
+              {rateField(index, 'peakMiss', 'settings.peakMiss')}
+              {rateField(index, 'peakHit', 'settings.peakHit')}
+              {rateField(index, 'peakOutput', 'settings.peakOutput')}
+            </div>
+          )}
+          {draft.entries.length > 1 && (
+            <div className="dpm-buttons">
+              <button
+                type="button"
+                className="dpm-mini"
+                onClick={() => onChange({
+                  ...draft,
+                  entries: draft.entries.filter((_, position) => position !== index),
+                })}
+              >
+                {t('settings.removeGroup')}
+              </button>
+            </div>
+          )}
         </div>
-      )}
+      ))}
+      <div className="dpm-buttons">
+        <button
+          type="button"
+          className="dpm-mini"
+          onClick={() => onChange({ ...draft, entries: [...draft.entries, entryDraft()] })}
+        >
+          {t('settings.addGroup')}
+        </button>
+      </div>
       <div className="dpm-buttons">
         <button type="button" className="dpm-button" onClick={onCancel}>{t('action.cancel')}</button>
         <button type="button" className="dpm-button dpm-button--primary" onClick={onSave}>{t('action.save')}</button>

@@ -30,15 +30,35 @@ export declare const currencySchema: z.ZodEnum<{
 }>;
 export type Currency = z.infer<typeof currencySchema>;
 /**
- * One pricing plan. `source: 'official'` plans are immutable catalog entries
- * the user copies before editing; `source: 'manual'` plans are user-owned.
- * Rates are per million tokens, as decimal strings.
+ * One group of models that share a rate table inside a plan: DeepSeek prices
+ * several models in one era, and sometimes bills one model at another's rates
+ * (a retired model whose requests are served by its successor), so a rate table
+ * belongs to a set of ids rather than to a single model.
+ */
+export declare const planEntrySchema: z.ZodObject<{
+    models: z.ZodArray<z.ZodString>;
+    offPeak: z.ZodObject<{
+        cacheMiss: z.ZodString;
+        cacheHit: z.ZodString;
+        output: z.ZodString;
+    }, z.core.$strict>;
+    peak: z.ZodOptional<z.ZodObject<{
+        cacheMiss: z.ZodString;
+        cacheHit: z.ZodString;
+        output: z.ZodString;
+    }, z.core.$strict>>;
+}, z.core.$strict>;
+/**
+ * One pricing era: the rates one provider charged for a set of models over a
+ * window. `source: 'official'` plans are immutable catalog entries the user
+ * copies before editing; `source: 'manual'` plans are user-owned. Rates are per
+ * million tokens, as decimal strings.
  *
  * A plan carries the currency its publisher printed, and no conversion is ever
  * applied: DeepSeek publishes the same rates as USD on the English page and as
  * CNY on the Chinese one, and the two are not the same numbers (the English
- * page rounds its conversion). An amount therefore always reads in the
- * currency of the plan that produced it.
+ * page rounds its conversion). An amount therefore always reads in the currency
+ * of the plan that produced it.
  */
 export declare const pricingPlanSchema: z.ZodObject<{
     id: z.ZodString;
@@ -48,7 +68,6 @@ export declare const pricingPlanSchema: z.ZodObject<{
         manual: "manual";
     }>;
     provider: z.ZodLiteral<"deepseek-official">;
-    modelIds: z.ZodArray<z.ZodString>;
     currency: z.ZodEnum<{
         USD: "USD";
         CNY: "CNY";
@@ -60,7 +79,13 @@ export declare const pricingPlanSchema: z.ZodObject<{
         peakWeekdays: z.ZodArray<z.ZodNumber>;
         peakWindows: z.ZodArray<z.ZodTuple<[z.ZodString, z.ZodString], null>>;
     }, z.core.$strict>>;
-    ratesPerMillion: z.ZodObject<{
+    provenance: z.ZodOptional<z.ZodObject<{
+        url: z.ZodString;
+        fetchedAt: z.ZodString;
+        contentHash: z.ZodString;
+    }, z.core.$strict>>;
+    entries: z.ZodArray<z.ZodObject<{
+        models: z.ZodArray<z.ZodString>;
         offPeak: z.ZodObject<{
             cacheMiss: z.ZodString;
             cacheHit: z.ZodString;
@@ -71,16 +96,12 @@ export declare const pricingPlanSchema: z.ZodObject<{
             cacheHit: z.ZodString;
             output: z.ZodString;
         }, z.core.$strict>>;
-    }, z.core.$strict>;
-    provenance: z.ZodOptional<z.ZodObject<{
-        url: z.ZodString;
-        fetchedAt: z.ZodString;
-        contentHash: z.ZodString;
     }, z.core.$strict>>;
 }, z.core.$strict>;
 export declare const pricingPlanSchemaStrict: ZodType<PricingPlan>;
-/** One official/manual plan (inferred from the schema). */
+/** One official/manual era plan (inferred from the schema). */
 export type PricingPlan = z.infer<typeof pricingPlanSchema>;
+export type PlanEntry = z.infer<typeof planEntrySchema>;
 export type RateBand = z.infer<typeof rateBandSchema>;
 export type PeakSchedule = z.infer<typeof peakScheduleSchema>;
 /**
@@ -92,13 +113,15 @@ export type PeakSchedule = z.infer<typeof peakScheduleSchema>;
  * Unknown keys are stripped, not rejected: every write goes through the
  * settings service as a patch whose plain objects merge recursively and whose
  * arrays replace wholesale, so a key this schema no longer declares stays in
- * the stored document forever. A version 1 blob is therefore nothing more than
- * a version 2 blob with two retired keys, and both read here.
+ * the stored document forever. The retired generation-1 keys (`mode`,
+ * `aliases`) and the generation-2 plan fields (`modelIds`, `ratesPerMillion`)
+ * are therefore simply absent here, and a generation-1 or generation-2 blob
+ * reads as the current one.
  */
 export declare const persistedSettingsSchema: z.ZodObject<{
-    schemaVersion: z.ZodUnion<readonly [z.ZodLiteral<1>, z.ZodLiteral<2>]>;
+    schemaVersion: z.ZodUnion<readonly [z.ZodLiteral<1>, z.ZodLiteral<2>, z.ZodLiteral<3>]>;
     selectedPlanId: z.ZodString;
-    plans: z.ZodArray<z.ZodObject<{
+    plans: z.ZodArray<z.ZodUnion<readonly [z.ZodObject<{
         id: z.ZodString;
         name: z.ZodString;
         source: z.ZodEnum<{
@@ -106,7 +129,6 @@ export declare const persistedSettingsSchema: z.ZodObject<{
             manual: "manual";
         }>;
         provider: z.ZodLiteral<"deepseek-official">;
-        modelIds: z.ZodArray<z.ZodString>;
         currency: z.ZodEnum<{
             USD: "USD";
             CNY: "CNY";
@@ -118,6 +140,49 @@ export declare const persistedSettingsSchema: z.ZodObject<{
             peakWeekdays: z.ZodArray<z.ZodNumber>;
             peakWindows: z.ZodArray<z.ZodTuple<[z.ZodString, z.ZodString], null>>;
         }, z.core.$strict>>;
+        provenance: z.ZodOptional<z.ZodObject<{
+            url: z.ZodString;
+            fetchedAt: z.ZodString;
+            contentHash: z.ZodString;
+        }, z.core.$strict>>;
+        entries: z.ZodArray<z.ZodObject<{
+            models: z.ZodArray<z.ZodString>;
+            offPeak: z.ZodObject<{
+                cacheMiss: z.ZodString;
+                cacheHit: z.ZodString;
+                output: z.ZodString;
+            }, z.core.$strict>;
+            peak: z.ZodOptional<z.ZodObject<{
+                cacheMiss: z.ZodString;
+                cacheHit: z.ZodString;
+                output: z.ZodString;
+            }, z.core.$strict>>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>, z.ZodObject<{
+        id: z.ZodString;
+        name: z.ZodString;
+        source: z.ZodEnum<{
+            official: "official";
+            manual: "manual";
+        }>;
+        provider: z.ZodLiteral<"deepseek-official">;
+        currency: z.ZodEnum<{
+            USD: "USD";
+            CNY: "CNY";
+        }>;
+        effectiveFrom: z.ZodOptional<z.ZodString>;
+        effectiveTo: z.ZodOptional<z.ZodString>;
+        schedule: z.ZodNullable<z.ZodObject<{
+            timezone: z.ZodLiteral<"UTC">;
+            peakWeekdays: z.ZodArray<z.ZodNumber>;
+            peakWindows: z.ZodArray<z.ZodTuple<[z.ZodString, z.ZodString], null>>;
+        }, z.core.$strict>>;
+        provenance: z.ZodOptional<z.ZodObject<{
+            url: z.ZodString;
+            fetchedAt: z.ZodString;
+            contentHash: z.ZodString;
+        }, z.core.$strict>>;
+        modelIds: z.ZodArray<z.ZodString>;
         ratesPerMillion: z.ZodObject<{
             offPeak: z.ZodObject<{
                 cacheMiss: z.ZodString;
@@ -130,22 +195,21 @@ export declare const persistedSettingsSchema: z.ZodObject<{
                 output: z.ZodString;
             }, z.core.$strict>>;
         }, z.core.$strict>;
-        provenance: z.ZodOptional<z.ZodObject<{
-            url: z.ZodString;
-            fetchedAt: z.ZodString;
-            contentHash: z.ZodString;
-        }, z.core.$strict>>;
-    }, z.core.$strict>>;
+    }, z.core.$strict>]>>;
     lastOfficialRefresh: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
-export type PersistedSettings = Omit<z.infer<typeof persistedSettingsSchema>, 'schemaVersion'> & {
-    /** The generation this build writes; a version 1 blob reads as version 2. */
-    readonly schemaVersion: 2;
+export type PersistedSettings = Omit<z.infer<typeof persistedSettingsSchema>, 'schemaVersion' | 'plans'> & {
+    /** The generation this build writes; earlier generations read as version 3. */
+    readonly schemaVersion: 3;
+    readonly plans: readonly PricingPlan[];
 };
 /**
  * Parse a stored settings blob; failures (an unreadable structure, a schema
  * generation this build does not know) yield undefined so the caller can offer
- * a reset instead of silently dropping the user's manual plans.
+ * a reset instead of silently dropping the user's manual plans. Every readable
+ * generation is normalized to the current one: a plan stored before a plan could
+ * price several models becomes a one-entry plan, and official plans one fetch
+ * produced become one era plan.
  * @param value - the persisted blob.
  * @returns the validated settings, normalized to the current schema version.
  */

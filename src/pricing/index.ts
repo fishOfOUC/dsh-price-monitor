@@ -16,11 +16,20 @@ export {
   type Currency,
   type PeakSchedule,
   type PersistedSettings,
+  type PlanEntry,
   type PricingPlan,
   type RateBand,
 } from './schema.ts'
-export { defaultSettings, expandOfficialModelIds, FLASH_MODEL_IDS, officialSeedPlans } from './official-seed.ts'
 export {
+  currentEraPlan,
+  defaultSettings,
+  expandOfficialModelIds,
+  FLASH_MODEL_IDS,
+  officialSeedPlans,
+  PRO_MODEL_IDS,
+} from './official-seed.ts'
+export {
+  entryFor,
   isPeak,
   priceLedger,
   type AttemptCost,

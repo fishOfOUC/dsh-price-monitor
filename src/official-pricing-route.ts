@@ -21,7 +21,7 @@ import {
   type OfficialModelRates,
   type OfficialPricingCandidate,
 } from './official-pricing.ts'
-import { officialSeedPlans } from './pricing/official-seed.ts'
+import { currentEraPlan } from './pricing/official-seed.ts'
 import { isTrustedApiRequest } from './trust-fence.ts'
 import { readBoundedBody, sendError, sendJson } from './wire.ts'
 import type { WebRouteFace } from './context-types.ts'
@@ -36,21 +36,22 @@ const MAX_REDIRECTS = 3
 const MAX_BODY_BYTES = 256 * 1024
 const TIMEOUT_MS = 10_000
 
-/** The shipped seed, expressed in the parser's per-model rate vocabulary for diffing. */
+/**
+ * The shipped era in force, expressed in the parser's per-model rate
+ * vocabulary for diffing: the refresh answers "did the price that applies now
+ * change", so it compares against the current era rather than the whole shipped
+ * history.
+ */
 function seedModelRates(): OfficialModelRates[] {
-  return officialSeedPlans.map(plan => {
-    const off = plan.ratesPerMillion.offPeak
-    const peak = plan.ratesPerMillion.peak
-    return {
-      model: plan.modelIds[0] ?? plan.id,
-      cacheHit: off.cacheHit,
-      cacheMiss: off.cacheMiss,
-      output: off.output,
-      peakCacheHit: peak?.cacheHit ?? off.cacheHit,
-      peakCacheMiss: peak?.cacheMiss ?? off.cacheMiss,
-      peakOutput: peak?.output ?? off.output,
-    }
-  })
+  return currentEraPlan().entries.map(entry => ({
+    model: entry.models[0] ?? 'unknown',
+    cacheHit: entry.offPeak.cacheHit,
+    cacheMiss: entry.offPeak.cacheMiss,
+    output: entry.offPeak.output,
+    peakCacheHit: entry.peak?.cacheHit ?? entry.offPeak.cacheHit,
+    peakCacheMiss: entry.peak?.cacheMiss ?? entry.offPeak.cacheMiss,
+    peakOutput: entry.peak?.output ?? entry.offPeak.output,
+  }))
 }
 
 async function fetchOfficialPricingPage(): Promise<string> {

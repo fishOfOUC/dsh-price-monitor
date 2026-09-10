@@ -292,26 +292,31 @@ function PlanSection({ view, t, catalog, ledger, onSelect }: {
               {effectiveLabel(selected, t)}
               {` · ${SYMBOL[selected.currency]} ${t('plan.perMillion')}`}
             </div>
-            <table className="dpm-table">
-              <thead>
-                <tr>
-                  <th>{t('plan.rateColumn')}</th>
-                  <th>{selected.ratesPerMillion.peak === undefined ? t('plan.rateColumn') : t('plan.offPeakColumn')}</th>
-                  {selected.ratesPerMillion.peak !== undefined && <th>{t('plan.peakColumn')}</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {BUCKETS.map(bucket => (
-                  <tr key={bucket}>
-                    <td>{t(LABEL[bucket])}</td>
-                    <td className="dpm-num">{rateCell(selected, selected.ratesPerMillion.offPeak, bucket)}</td>
-                    {selected.ratesPerMillion.peak !== undefined && (
-                      <td className="dpm-num">{rateCell(selected, selected.ratesPerMillion.peak, bucket)}</td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {selected.entries.map(entry => (
+              <div className="dpm-plan__group" key={entry.models[0]}>
+                <div className="dpm-plan__models dpm-num">{entry.models.join(' · ')}</div>
+                <table className="dpm-table">
+                  <thead>
+                    <tr>
+                      <th>{t('plan.rateColumn')}</th>
+                      <th>{entry.peak === undefined ? t('plan.rateColumn') : t('plan.offPeakColumn')}</th>
+                      {entry.peak !== undefined && <th>{t('plan.peakColumn')}</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {BUCKETS.map(bucket => (
+                      <tr key={bucket}>
+                        <td>{t(LABEL[bucket])}</td>
+                        <td className="dpm-num">{rateCell(selected.currency, entry.offPeak, bucket)}</td>
+                        {entry.peak !== undefined && (
+                          <td className="dpm-num">{rateCell(selected.currency, entry.peak, bucket)}</td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
           </div>
         )}
 
@@ -387,14 +392,14 @@ function effectiveLabel(plan: PersistedSettings['plans'][number], t: Translate):
     : t('plan.effective', { from: plan.effectiveFrom, to: plan.effectiveTo })
 }
 
-/** One plan rate cell, in that plan's own currency. */
+/** One rate cell, in the plan's own currency. */
 function rateCell(
-  plan: PersistedSettings['plans'][number],
+  currency: Currency,
   band: { cacheMiss: string; cacheHit: string; output: string },
   bucket: Bucket,
 ): string {
   const value = bucket === 'miss' ? band.cacheMiss : bucket === 'hit' ? band.cacheHit : band.output
-  return `${SYMBOL[plan.currency]}${value}`
+  return `${SYMBOL[currency]}${value}`
 }
 
 /** The per-turn list with expandable attempt details. */
@@ -486,7 +491,13 @@ function AttemptRows({ attempt, t, currency }: { attempt: PricedAttempt; t: Tran
       <span className="dpm-line">
         <span>{label}</span>
         <span className="dpm-num">
-          {`${attempt.planName ?? ''}${attempt.peak === true ? ` · ${t('turns.peak')}` : ''}`}
+          {[
+            attempt.planName ?? '',
+            attempt.peak === true ? t('turns.peak') : '',
+            // The era prices a model it does not list by its headline rates;
+            // naming the group makes that substitution visible.
+            attempt.pricedAs === undefined ? '' : t('turns.pricedAs', { model: attempt.pricedAs }),
+          ].filter(part => part !== '').join(' · ')}
         </span>
       </span>
       {rows.map(([key, tokens, cost]) => (

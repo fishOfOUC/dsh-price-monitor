@@ -38,7 +38,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && tsdown",
+    "build": "tsc -p tsconfig.build.json && tsdown && node scripts/trim-generated.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\""

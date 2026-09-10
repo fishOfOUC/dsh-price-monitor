@@ -167,6 +167,17 @@ export const PRICE_MONITOR_CSS = `
 .dpm-badge--manual { background: var(--dsw-alias-bg-layer-3); color: var(--dsw-alias-state-warn-label); }
 .dpm-plan__meta { margin-top: 2px; font-size: 9px; color: var(--dsw-alias-label-quaternary); }
 
+.dpm-plan__group { margin-top: 6px; }
+.dpm-plan__group + .dpm-plan__group { padding-top: 6px; border-top: 1px dashed var(--dsw-alias-border-l1); }
+.dpm-plan__models { font-size: 9px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+
+.dpm-entry {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 6px;
+}
+
 .dpm-table { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 10px; }
 .dpm-table th {
   padding: 2px 0 3px;

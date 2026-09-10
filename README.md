@@ -86,8 +86,22 @@ stays a `Decimal` until display.
 
 | Plan source | Editable | Created by |
 |---|---|---|
-| `official` | no — duplicate it first | the bundled snapshot, or an official refresh |
-| `manual` | yes | the settings panel |
+| `official` | no — duplicate it first | an official refresh (the fetched era) |
+| `manual` | yes | the settings panel, or the bundled history below |
+
+The bundled catalog is the flash model's published price history — one plan per
+era, all in CNY, with the era in force selected:
+
+| Plan | Rates per 1M tokens (off-peak, peak) |
+|---|---|
+| 涨价前（8-17 前） | ¥0.02 / ¥1 / ¥2, one flat price |
+| 涨价后（8-17 起） | ¥0.05 / ¥1.5 / ¥4.5, peak ¥0.1 / ¥3 / ¥9 |
+| 降价后（现行官方价） | flash ¥0.02 / ¥1 / ¥4 and peak ¥0.04 / ¥2 / ¥8; pro ¥0.15 / ¥4.5 / ¥13.5 and peak ¥0.3 / ¥9 / ¥27 |
+
+A refresh replaces the `official` plan with the era the page currently
+describes: one plan carrying one rate table per model the page lists, so a
+retired model billed at its successor's rates is expressed as a group naming
+both ids.
 
 ### Currency
 
@@ -123,14 +137,24 @@ end of the period may be filled in on its own.
 
 ### How a session is priced
 
-**The selected plan is the whole pricing basis.** It prices every attempt of
-the session, so switching a plan moves the hero total, the three-bucket
-breakdown, the per-turn rows, and the comparison list together — the reason to
-switch is exactly "what would these tokens cost at other rates", and the model
-and provider that produced them are what the substitution replaces. Nothing
-about an attempt's route gates an amount: a request whose model no plan names, a
-request that ran on another gateway, and a request with no route recorded at all
-are all priced at the selected plan's rates.
+**The selected plan is the whole pricing basis, and a plan is an era**: the
+rates one provider charged for a set of models over a window. Switching a plan
+moves the hero total, the three-bucket breakdown, the per-turn rows, and the
+comparison list together — the reason to switch is exactly "what would these
+tokens cost under another era", and a session that switched models mid-way is
+still priced model by model.
+
+Within a plan, each attempt is priced by the group its own model belongs to:
+
+- a group that names the model prices it;
+- a model no group names (a renamed id, a model the era never listed, an attempt
+  with no route recorded) is priced by the plan's **first group**, the era's
+  headline rates, and the attempt row says `priced as <model>` so the
+  substitution is visible rather than silent.
+
+Nothing about a provider gates an amount either: a request that ran on another
+gateway is priced the same way. Only the token facts can leave an attempt out of
+the money.
 
 Only the token facts can leave an attempt out of the money: usage that never
 arrived or failed validation, cache buckets that cannot be separated, and
@@ -280,10 +304,10 @@ settings panel. The bundled official snapshot is the offline default.
 
 | File | Covers |
 |---|---|
-| `tests/usage-ledger.spec.ts` | the fold: attempt lifecycle, retries, validation, contradictions, reference stability, cold/live parity, and cross-checks against the harness's `deriveTurnTokenUsage` |
-| `tests/pricing-engine.spec.ts` | peak boundaries, the selected plan as the sole basis (route, model, and rate period never gate an amount), switching plans reprices every layer, token facts under partial pricing, decimal exactness, schema rejection, and the v1 upgrade |
+| `tests/usage-ledger.spec.ts` | the fold: attempt lifecycle, retries, validation, contradictions, a usage sample that never reported a cache-write bucket, reference stability, cold/live parity, and cross-checks against the harness's `deriveTurnTokenUsage` |
+| `tests/pricing-engine.spec.ts` | peak boundaries, the selected era as the sole basis with a table per model group, the headline-group fallback for an unlisted model, switching plans repricing every layer, token facts under partial pricing, decimal exactness, schema rejection, and the generation-1/2 upgrades |
 | `tests/official-pricing.spec.ts` | both saved page fixtures (three-column and the renamed two-model layout) parse exactly; changed amounts, categories, headers, malformed ids, or footnote windows fail |
 | `tests/trust-fence.spec.ts` | loopback/trusted hosts pass; cross-site, opaque, and mismatched origins fail |
 | `tests/client.spec.tsx` | activation and the feature gate, catalog reads (including the v1 upgrade), the hero total equal to the sum of the turn rows, and a plan switch repricing hero, breakdown, and rows |
-| `tests/client-interaction.spec.tsx` | expanding a turn reveals each attempt; clicking a plan writes the catalog and reprices the rendered tab; a failed write surfaces |
+| `tests/client-interaction.spec.tsx` | expanding a turn reveals each attempt; clicking a plan writes the catalog and reprices the rendered tab; the plan form edits one rate table per model group; a failed write surfaces |
 | `tests/built-artifacts.spec.ts` | the built entry points exist and behave; the client bundle is a valid loader factory; the route over real HTTP refuses GET/cross-site/foreign redirects and returns a candidate plus diff |

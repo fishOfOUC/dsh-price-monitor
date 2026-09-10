@@ -27,36 +27,39 @@ function hashPrefix(hash: string): string {
   return hash.slice(0, 8)
 }
 
-/** Turn one parsed candidate into immutable official plans (one per model). */
+/**
+ * Turn one parsed candidate into the single era plan it describes: the page
+ * states the rates in force, with one rate table per model it lists, so one
+ * fetch yields one plan that replaces the previous fetch's.
+ */
 function plansFromCandidate(candidate: OfficialPricingCandidate): PricingPlan[] {
+  const observedOn = candidate.fetchedAt.slice(0, 10)
   const schedule = {
     timezone: 'UTC' as const,
     peakWeekdays: [1, 2, 3, 4, 5],
     peakWindows: candidate.peakWindows.map(window => [...window]) as [string, string][],
   }
-  const observedOn = candidate.fetchedAt.slice(0, 10)
-  return candidate.models.map(model => ({
-    id: `official:${model.model}:${observedOn}:${hashPrefix(candidate.contentHash)}`,
-    name: `${model.model} · official`,
+  return [{
+    id: `official:${observedOn}:${hashPrefix(candidate.contentHash)}`,
+    name: `${t('plan.officialEra')} ${observedOn}`,
     source: 'official' as const,
     provider: 'deepseek-official' as const,
-    // The flash model is still matched by the ids it has been reported under
-    // (the seed and a refreshed catalog must agree on coverage).
-    modelIds: expandOfficialModelIds(model.model),
     currency: candidate.currency,
     // No declared start: a fetch learns today's rates, not when they began.
-    // A later-fetched version supersedes this one by its observation time.
     schedule,
-    ratesPerMillion: {
+    entries: candidate.models.map(model => ({
+      // The flash model is still priced by the ids it has been reported under
+      // (the seed and a refreshed catalog must agree on coverage).
+      models: expandOfficialModelIds(model.model),
       offPeak: { cacheMiss: model.cacheMiss, cacheHit: model.cacheHit, output: model.output },
       peak: { cacheMiss: model.peakCacheMiss, cacheHit: model.peakCacheHit, output: model.peakOutput },
-    },
+    })),
     provenance: {
       url: candidate.sourceUrl,
       fetchedAt: candidate.fetchedAt,
       contentHash: candidate.contentHash,
     },
-  }))
+  }]
 }
 
 export interface OfficialDiffPanelProps {

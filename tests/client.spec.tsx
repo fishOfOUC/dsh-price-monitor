@@ -216,17 +216,25 @@ describe('catalog reads', () => {
     expect(catalogFromPrefs({ pluginSettings: { [SETTINGS_KEY]: { [CATALOG_KEY]: { schemaVersion: 9 } } } } as unknown as SidebarPrefs)).toBeUndefined()
   })
 
-  it('upgrades a stored v1 catalog instead of reporting it corrupt', () => {
+  it('upgrades a stored v2 catalog instead of reporting it corrupt', () => {
     const plans = [...officialSeedPlans]
+    // The generation-2 shape: one model-id list and one rate table per plan.
     const stored = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       selectedPlanId: plans[1]!.id,
-      mode: 'reprice',
-      plans,
-      aliases: { 'deepseek-v4.1-flash-expires-on-0910': 'deepseek-v4-flash-vision-exp' },
+      plans: plans.map(plan => {
+        const { entries, ...rest } = plan
+        return {
+          ...rest,
+          modelIds: entries.flatMap(entry => entry.models),
+          ratesPerMillion: { offPeak: entries[0]!.offPeak, ...entries[0]!.peak === undefined ? {} : { peak: entries[0]!.peak } },
+        }
+      }),
     }
     const catalog = catalogFromPrefs({ pluginSettings: { [SETTINGS_KEY]: { [CATALOG_KEY]: stored } } } as unknown as SidebarPrefs)
-    expect(catalog).toEqual({ schemaVersion: 2, selectedPlanId: plans[1]!.id, plans })
+    expect(catalog?.schemaVersion).toBe(3)
+    expect(catalog?.selectedPlanId).toBe(plans[1]!.id)
+    expect(catalog?.plans.map(plan => plan.name)).toEqual(plans.map(plan => plan.name))
   })
 })
 
@@ -256,24 +264,29 @@ describe('rendered tab', () => {
 
   it('reprices the hero, the breakdown, and every turn row when the plan changes', () => {
     const plans = defaultSettings()
-    const [flash, pro] = officialSeedPlans
-    const atFlash = renderToStaticMarkup(
-      <PriceMonitorTab {...tabProps(storeWith({ ...plans, selectedPlanId: flash!.id }).store, LEDGER)} />)
-    const atPro = renderToStaticMarkup(
-      <PriceMonitorTab {...tabProps(storeWith({ ...plans, selectedPlanId: pro!.id }).store, LEDGER)} />)
+    const [before, , current] = officialSeedPlans
+    const atBefore = renderToStaticMarkup(
+      <PriceMonitorTab {...tabProps(storeWith({ ...plans, selectedPlanId: before!.id }).store, LEDGER)} />)
+    const atCurrent = renderToStaticMarkup(
+      <PriceMonitorTab {...tabProps(storeWith({ ...plans, selectedPlanId: current!.id }).store, LEDGER)} />)
 
-    // Turn 1 runs in a peak window (1M miss / 2M cache-read / 0.5M output) and
-    // turn 2 off-peak (0.1M miss / 10k output), so flash is
-    // 2 + 2×0.04 + 0.5×8 + 0.1×1 + 0.01×4 = 6.22 yuan and the pro plan is
-    // 9 + 2×0.3 + 0.5×27 + 0.1×4.5 + 0.01×13.5 = 23.685 yuan.
-    expect(heroTotal(atFlash, '¥')).toBeCloseTo(6.22, 8)
-    expect(heroTotal(atPro, '¥')).toBeCloseTo(23.685, 8)
+    // Turn 1 (flash) runs in a peak window with 1M miss / 2M cache-read /
+    // 0.5M output; turn 2 (pro) is off-peak with 0.1M miss / 10k output. The
+    // flat pre-hike era prices both at its headline rates:
+    // 1 + 2×0.02 + 0.5×2 + 0.1×1 + 0.01×2 = 2.16 yuan. The current era prices
+    // the flash turn at 2 / 0.04 / 8 in peak and the pro turn at its own
+    // 4.5 / 0.15 / 13.5 off-peak table:
+    // 2 + 2×0.04 + 0.5×8 + 0.1×4.5 + 0.01×13.5 = 6.665 yuan.
+    expect(heroTotal(atBefore, '¥')).toBeCloseTo(2.16, 8)
+    expect(heroTotal(atCurrent, '¥')).toBeCloseTo(6.665, 8)
     // The breakdown, the rate table, and the turn rows move with it, not just
     // the hero.
-    expect(amountsIn(atPro)).not.toEqual(amountsIn(atFlash))
-    expect(turnTotals(atPro)).not.toEqual(turnTotals(atFlash))
-    expect(rateTableOf(atFlash)).toBe('¥1')
-    expect(rateTableOf(atPro)).toBe('¥4.5')
+    expect(amountsIn(atCurrent)).not.toEqual(amountsIn(atBefore))
+    expect(turnTotals(atCurrent)).not.toEqual(turnTotals(atBefore))
+    expect(rateTableOf(atBefore)).toBe('¥1')
+    expect(rateTableOf(atCurrent)).toBe('¥1')
+    // The current era prices two models, so its card carries one table each.
+    expect(atCurrent).toContain(current!.entries[1]!.models[0])
   })
 
   it('falls back to the bundled official snapshot and reports a corrupt blob', () => {

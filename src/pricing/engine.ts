@@ -4,19 +4,24 @@
  * boundary — no binary float ever carries an amount, and nothing is rounded
  * before the final aggregate.
  *
- * The selected plan is the sole pricing basis: it prices every attempt of the
- * session, so switching plans changes every amount, whether or not the attempt
- * ran on a model that plan names. Peak/off-peak is chosen from an attempt's
- * UTC start time. Aggregation order is attempt → turn → session, and each
- * layer carries the three cost buckets plus the total, so the per-turn rows
- * add up to the session card exactly.
+ * The selected plan is the sole pricing basis, and a plan is a whole era: it
+ * prices every attempt of the session, and within it each attempt is priced by
+ * the rate table its own model belongs to, so a session that switched models
+ * mid-way is still priced model by model. A model the era does not list falls
+ * back to the plan's first group (the era's headline rates), and the attempt
+ * records which group priced it.
+ *
+ * Peak/off-peak is chosen from an attempt's UTC start time, with the schedule
+ * the plan shares across its groups. Aggregation order is attempt → turn →
+ * session, and each layer carries the three cost buckets plus the total, so the
+ * per-turn rows add up to the session card exactly.
  *
  * @module dsh-price-monitor/pricing/engine
  */
 
 import { Decimal } from 'decimal.js'
 import type { AttemptUsageRow, PriceMonitorUsageView, TurnUsageRow } from '../projection-types.ts'
-import type { PeakSchedule, PersistedSettings, PricingPlan, RateBand } from './schema.ts'
+import type { PeakSchedule, PersistedSettings, PlanEntry, PricingPlan, RateBand } from './schema.ts'
 
 /** Why one attempt was not priced exactly. */
 export type AttemptPricingReason =
@@ -42,6 +47,8 @@ export interface PricedAttempt {
   readonly planId?: string
   /** Display name of that plan. */
   readonly planName?: string
+  /** The plan group that priced it (its first model id), when substitution happened. */
+  readonly pricedAs?: string
   /** Whether the plan's peak band applied (chosen from the attempt's UTC start time). */
   readonly peak?: boolean
   readonly cost?: AttemptCost
@@ -106,12 +113,29 @@ export function isPeak(schedule: PeakSchedule, epochMs: number): boolean {
   })
 }
 
-/** The effective rate band for one plan at a timestamp. */
-function bandFor(plan: PricingPlan, epochMs: number): RateBand {
-  if (plan.schedule !== null && isPeak(plan.schedule, epochMs) && plan.ratesPerMillion.peak !== undefined) {
-    return plan.ratesPerMillion.peak
+/** The rate band of one entry at a timestamp; peak only when the plan schedules it. */
+function bandFor(plan: PricingPlan, entry: PlanEntry, epochMs: number): RateBand {
+  if (plan.schedule !== null && entry.peak !== undefined && isPeak(plan.schedule, epochMs)) {
+    return entry.peak
   }
-  return plan.ratesPerMillion.offPeak
+  return entry.offPeak
+}
+
+/**
+ * The group of a plan that prices one model: the group naming it, or the plan's
+ * first group. The era's headline rates are the documented fallback for a model
+ * the era does not list — a session that ran a model this era never priced is
+ * still compared against it — and the priced attempt names the group it used.
+ * @param plan - the selected plan.
+ * @param model - the attempt's reported model id, when it has one.
+ * @returns the entry that prices this attempt.
+ */
+export function entryFor(plan: PricingPlan, model: string | undefined): PlanEntry {
+  if (model !== undefined) {
+    const named = plan.entries.find(entry => entry.models.includes(model))
+    if (named !== undefined) return named
+  }
+  return plan.entries[0]!
 }
 
 const ZERO = new Decimal(0)
@@ -130,9 +154,9 @@ function sumCost(parts: readonly AttemptCost[]): AttemptCost {
   return { miss, hit, output, total }
 }
 
-/** The three cost buckets of one attempt under one plan's band, per million tokens. */
-function costOf(attempt: AttemptUsageRow, plan: PricingPlan, epochMs: number): AttemptCost {
-  const band = bandFor(plan, epochMs)
+/** The three cost buckets of one attempt under one group's band, per million tokens. */
+function costOf(attempt: AttemptUsageRow, plan: PricingPlan, entry: PlanEntry): AttemptCost {
+  const band = bandFor(plan, entry, attempt.startedAt)
   const divisor = new Decimal(1_000_000)
   const miss = new Decimal(attempt.uncachedInputTokens ?? 0).mul(band.cacheMiss).div(divisor)
   const hit = new Decimal(attempt.cacheReadTokens ?? 0).mul(band.cacheHit).div(divisor)
@@ -166,12 +190,15 @@ function priceAttempt(attempt: AttemptUsageRow, plan: PricingPlan | undefined): 
   const blocker = tokenBlocker(attempt)
   if (blocker !== undefined) return { row: attempt, reason: blocker }
   if (plan === undefined) return { row: attempt, reason: 'no-plan' }
+  const entry = entryFor(plan, attempt.model)
+  const substituted = attempt.model === undefined || !entry.models.includes(attempt.model)
   return {
     row: attempt,
     planId: plan.id,
     planName: plan.name,
-    peak: plan.schedule !== null && isPeak(plan.schedule, attempt.startedAt),
-    cost: costOf(attempt, plan, attempt.startedAt),
+    ...substituted ? { pricedAs: entry.models[0]! } : {},
+    peak: plan.schedule !== null && entry.peak !== undefined && isPeak(plan.schedule, attempt.startedAt),
+    cost: costOf(attempt, plan, entry),
   }
 }
 

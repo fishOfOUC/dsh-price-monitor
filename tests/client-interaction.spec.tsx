@@ -190,7 +190,7 @@ describe('plan switching', () => {
     expect(writes).toHaveLength(1)
     expect(node.textContent).toContain(target.name)
     // The plan card now shows the selected plan's own rates.
-    expect(node.textContent).toContain(`¥${target.ratesPerMillion.offPeak.output}`)
+    expect(node.textContent).toContain(`¥${target.entries[0]!.offPeak.output}`)
   })
 
   it('surfaces a failed write instead of silently keeping the old selection', async () => {
@@ -269,9 +269,19 @@ describe('plan settings panel', () => {
     // A single price: the pre-hike phase had no peak/off-peak tiers.
     const peak = container.querySelector('.dpm-check input') as HTMLInputElement
     act(() => { peak.click() })
-    set('#dpm-cacheMiss', '1')
-    set('#dpm-cacheHit', '0.02')
-    set('#dpm-output', '2')
+    set('#dpm-0-models', 'deepseek-flash, deepseek-v4-flash')
+    set('#dpm-0-cacheMiss', '1')
+    set('#dpm-0-cacheHit', '0.02')
+    set('#dpm-0-output', '2')
+    // A second group for the other model the era priced.
+    act(() => {
+      const addGroup = [...container!.querySelectorAll('button')].find(b => b.textContent?.includes(en['settings.addGroup']))
+      addGroup!.click()
+    })
+    set('#dpm-1-models', 'deepseek-v4-pro')
+    set('#dpm-1-cacheMiss', '1.5')
+    set('#dpm-1-cacheHit', '0.05')
+    set('#dpm-1-output', '4')
     act(() => {
       const save = [...container!.querySelectorAll('button')].find(b => b.textContent?.includes(en['action.save']))
       save!.click()
@@ -284,7 +294,10 @@ describe('plan settings panel', () => {
     expect(added!['schedule']).toBeNull()
     expect(added!['effectiveTo']).toBe('2026-08-16')
     expect(added!['effectiveFrom']).toBeUndefined()
-    expect(added!['ratesPerMillion']).toEqual({ offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '2' } })
+    expect(added!['entries']).toEqual([
+      { models: ['deepseek-flash', 'deepseek-v4-flash'], offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '2' } },
+      { models: ['deepseek-v4-pro'], offPeak: { cacheMiss: '1.5', cacheHit: '0.05', output: '4' } },
+    ])
     expect(written.selectedPlanId).toBe(added!['id'])
   })
 })
@@ -294,22 +307,22 @@ describe('plan switching reprices the tab', () => {
     const { store } = makeStore(defaultSettings())
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ value: {} }), { status: 200 })))
     const node = render(store)
-    const pro = officialSeedPlans[1]!
+    const raised = officialSeedPlans[1]!
     const hero = (): string => (node.querySelector('.dpm-hero__value') as HTMLElement).textContent ?? ''
     const rows = (): string[] => [...node.querySelectorAll('.dpm-turn__cost')].map(element => element.textContent ?? '')
     const rates = (): string => (node.querySelector('.dpm-table') as HTMLElement).textContent ?? ''
 
-    // 1M cache-miss tokens off-peak: ¥1 at the flash rates, ¥4.5 at pro's.
+    // 1M cache-miss tokens off-peak: ¥1 in the era in force, ¥1.5 after the rise.
     expect(hero()).toBe('¥1.000000')
     expect(rows()).toEqual(['¥1.000000'])
-    const flashRates = rates()
+    const currentRates = rates()
 
     const chips = [...node.querySelectorAll('.dpm-chip')] as HTMLElement[]
-    await act(async () => { chips.find(element => element.textContent === pro.name)!.click() })
+    await act(async () => { chips.find(element => element.textContent === raised.name)!.click() })
 
-    expect(hero()).toBe('¥4.500000')
-    expect(rows()).toEqual(['¥4.500000'])
-    expect(rates()).not.toBe(flashRates)
+    expect(hero()).toBe('¥1.500000')
+    expect(rows()).toEqual(['¥1.500000'])
+    expect(rates()).not.toBe(currentRates)
     // The attempt with no reported usage stays out of the money either way.
     expect(node.textContent).toContain(en['total.known'])
     expect(node.textContent).toContain(en['reason.no-usage'])
