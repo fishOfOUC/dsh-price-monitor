@@ -320,9 +320,26 @@ describe('settings schema', () => {
     expect(pricingPlanSchema.safeParse(flashPlan({ schedule: { ...SCHEDULE, peakWindows: [['01:00', '03:00'], ['02:00', '04:00']] } })).success).toBe(false)
     expect(pricingPlanSchema.safeParse(flashPlan({ schedule: SCHEDULE, ratesPerMillion: { offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' } } })).success).toBe(false)
     expect(pricingPlanSchema.safeParse(flashPlan({ modelIds: [] })).success).toBe(false)
-    // An unknown start is valid, but it cannot also declare an end.
+    // Either end of the rate period may stand alone: an official snapshot knows
+    // no start, and a superseded rate knows its end without its beginning.
     expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: undefined })).success).toBe(true)
-    expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: undefined, effectiveTo: '2026-10-01' })).success).toBe(false)
+    expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: undefined, effectiveTo: '2026-08-16' })).success).toBe(true)
+    // A period that ends before it starts is still refused.
+    expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: '2026-09-10', effectiveTo: '2026-08-16' })).success).toBe(false)
+  })
+
+  it('keeps the currency a plan was published in, and refuses an unknown one', () => {
+    expect(pricingPlanSchema.safeParse(flashPlan({ currency: 'CNY' })).success).toBe(true)
+    expect(pricingPlanSchema.safeParse({ ...flashPlan(), currency: 'EUR' }).success).toBe(false)
+  })
+
+  it('prices the same tokens identically whatever currency the plan is in', () => {
+    // The engine multiplies plain decimals; the unit is the plan's, and no
+    // conversion happens anywhere.
+    const row = attempt({ uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
+    const usd = priceLedger(ledgerOf([row]), settingsOf([flashPlan()]))
+    const cny = priceLedger(ledgerOf([row]), settingsOf([flashPlan({ currency: 'CNY' })]))
+    expect(cny.cost.total.toFixed()).toBe(usd.cost.total.toFixed())
   })
 
   it('upgrades a v1 blob, keeping its plans and selection', () => {

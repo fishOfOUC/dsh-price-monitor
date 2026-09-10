@@ -18,6 +18,7 @@ import { Decimal } from 'decimal.js'
 import type { TabComponentProps } from 'dsh-better-sidebar/client/service'
 import type {
   AttemptPricingReason,
+  Currency,
   PersistedSettings,
   PricedAttempt,
   PriceView,
@@ -28,6 +29,7 @@ import { clientContextOf } from '../context-types.ts'
 import { t, type PriceMonitorKey, type Translate } from './locales.ts'
 import { useCatalog, usePriceView, useSidebarPrefs, useUsageLedger } from './usePriceMonitor.ts'
 import { writeCatalog } from './settings-write.ts'
+import { formatCost, formatDelta, SYMBOL } from './money.ts'
 import { OfficialDiffPanel } from './OfficialDiffPanel.tsx'
 
 /** The three billed buckets, in display order. */
@@ -53,21 +55,6 @@ function formatTokens(value: number): string {
   return String(value)
 }
 
-/** Format USD with adaptive decimals: small totals keep enough digits to stay readable. */
-function formatCost(value: Decimal): string {
-  const absolute = value.abs()
-  const decimals = absolute.gte(10) ? 4 : absolute.gte(0.01) ? 6 : 8
-  return `$${value.toFixed(decimals)}`
-}
-
-/** A signed percentage change of `current` against `reference`. */
-function formatDelta(current: Decimal, reference: Decimal): string | undefined {
-  if (reference.isZero()) return undefined
-  const delta = current.div(reference).minus(1).mul(100)
-  if (delta.isZero()) return undefined
-  return `${delta.isNegative() ? '−' : '+'}${delta.abs().toFixed(0)}%`
-}
-
 /** Wall-clock `HH:MM` for one epoch-ms time. */
 function clockOf(epochMs: number): string {
   const date = new Date(epochMs)
@@ -90,6 +77,9 @@ export function PriceMonitorTab({ ctx: sidebarCtx, store, scope, visible }: TabC
   const [writeError, setWriteError] = useState<string | null>(null)
 
   const selectedPlan = catalog.plans.find(plan => plan.id === catalog.selectedPlanId)
+  // Every amount in the view comes from the selected plan, so it also carries
+  // that plan's currency; only the comparison list spans several plans.
+  const currency = selectedPlan?.currency ?? 'USD'
   const turns = useMemo(() => [...view.turns].reverse(), [view.turns])
   const attemptCount = view.coverage.priced + view.coverage.uncovered
 
@@ -131,14 +121,14 @@ export function PriceMonitorTab({ ctx: sidebarCtx, store, scope, visible }: TabC
         )
         : (
           <>
-            <HeroSection view={view} t={t} attemptCount={attemptCount} turnCount={view.turns.length} />
-            <BreakdownSection view={view} t={t} />
+            <HeroSection view={view} t={t} currency={currency} attemptCount={attemptCount} turnCount={view.turns.length} />
+            <BreakdownSection view={view} t={t} currency={currency} />
             <PlanSection
               view={view} t={t} catalog={catalog} ledger={ledger}
               onSelect={planId => write(current => ({ ...current, selectedPlanId: planId }))}
             />
             <TurnsSection
-              turns={turns} t={t} openTurn={openTurn}
+              turns={turns} t={t} currency={currency} openTurn={openTurn}
               onToggle={index => setOpenTurn(openTurn === index ? null : index)}
             />
           </>
@@ -150,9 +140,10 @@ export function PriceMonitorTab({ ctx: sidebarCtx, store, scope, visible }: TabC
 }
 
 /** The hero card: total, coverage note, and the run statistics. */
-function HeroSection({ view, t, attemptCount, turnCount }: {
+function HeroSection({ view, t, currency, attemptCount, turnCount }: {
   view: PriceView
   t: Translate
+  currency: Currency
   attemptCount: number
   turnCount: number
 }): React.ReactElement {
@@ -163,7 +154,7 @@ function HeroSection({ view, t, attemptCount, turnCount }: {
   return (
     <section className="dpm-section">
       <div className="dpm-hero">
-        <span className="dpm-num dpm-hero__value">{formatCost(view.cost.total)}</span>
+        <span className="dpm-num dpm-hero__value">{formatCost(view.cost.total, currency)}</span>
         <span className="dpm-hero__aside">
           <div>{partial ? t('total.known') : t('total.label')}</div>
         </span>
@@ -171,7 +162,7 @@ function HeroSection({ view, t, attemptCount, turnCount }: {
       <div className="dpm-stats">
         <Stat label={t('stat.tokens')} value={formatTokens(view.tokens.total)} />
         <Stat label={t('stat.turns')} value={String(turnCount)} />
-        <Stat label={t('stat.average')} value={formatCost(average)} />
+        <Stat label={t('stat.average')} value={formatCost(average, currency)} />
         <Stat label={t('stat.hitRate')} value={hitRate === undefined ? '—' : `${(hitRate * 100).toFixed(0)}%`} />
       </div>
       <p className="dpm-note">
@@ -206,7 +197,7 @@ function Stat({ label, value }: { label: string; value: string }): React.ReactEl
 }
 
 /** The three cost buckets with token counts and a share bar. */
-function BreakdownSection({ view, t }: { view: PriceView; t: Translate }): React.ReactElement {
+function BreakdownSection({ view, t, currency }: { view: PriceView; t: Translate; currency: Currency }): React.ReactElement {
   const total = view.cost.total
   const share = (bucket: Bucket): string => {
     if (total.isZero()) return '0'
@@ -241,7 +232,7 @@ function BreakdownSection({ view, t }: { view: PriceView; t: Translate }): React
           <span className={`dpm-dot ${SWATCH[bucket]}`} aria-hidden="true" />
           <span className="dpm-break__label">{t(LABEL[bucket])}</span>
           <span className="dpm-break__tokens dpm-num">{t('breakdown.tokens', { tokens: formatTokens(tokens[bucket]) })}</span>
-          <span className="dpm-break__cost dpm-num">{formatCost(costs[bucket])}</span>
+          <span className="dpm-break__cost dpm-num">{formatCost(costs[bucket], currency)}</span>
         </div>
       ))}
       {view.coverage.byReason['cache-write'] > 0 && (
@@ -271,6 +262,7 @@ function PlanSection({ view, t, catalog, ledger, onSelect }: {
     }))
     .sort((left, right) => right.total.comparedTo(left.total)), [catalog, ledger])
   const base = comparisons.find(entry => entry.plan.id === catalog.selectedPlanId)?.total ?? view.cost.total
+  const selectedCurrency = selected?.currency ?? 'USD'
   return (
     <section className="dpm-section">
       <div className="dpm-section__head">
@@ -298,7 +290,7 @@ function PlanSection({ view, t, catalog, ledger, onSelect }: {
             </div>
             <div className="dpm-plan__meta">
               {effectiveLabel(selected, t)}
-              {` · ${t('plan.perMillion')}`}
+              {` · ${SYMBOL[selected.currency]} ${t('plan.perMillion')}`}
             </div>
             <table className="dpm-table">
               <thead>
@@ -312,9 +304,9 @@ function PlanSection({ view, t, catalog, ledger, onSelect }: {
                 {BUCKETS.map(bucket => (
                   <tr key={bucket}>
                     <td>{t(LABEL[bucket])}</td>
-                    <td className="dpm-num">{rateCell(selected.ratesPerMillion.offPeak, bucket)}</td>
+                    <td className="dpm-num">{rateCell(selected, selected.ratesPerMillion.offPeak, bucket)}</td>
                     {selected.ratesPerMillion.peak !== undefined && (
-                      <td className="dpm-num">{rateCell(selected.ratesPerMillion.peak, bucket)}</td>
+                      <td className="dpm-num">{rateCell(selected, selected.ratesPerMillion.peak, bucket)}</td>
                     )}
                   </tr>
                 ))}
@@ -341,13 +333,14 @@ function PlanSection({ view, t, catalog, ledger, onSelect }: {
         <div className="dpm-compare">
           <div className="dpm-compare__title">{t('plan.compare')}</div>
           {comparisons.map(({ plan, total }) => {
-            const delta = formatDelta(total, base)
+            // A ratio only means something between two plans of one currency.
+            const delta = formatDelta(total, base, plan.currency === selectedCurrency)
             const current = plan.id === catalog.selectedPlanId
             return (
               <div className="dpm-compare__row" key={plan.id}>
                 <span>{`${current ? '●' : '○'} ${plan.name}`}</span>
                 <span className="dpm-num">
-                  {formatCost(total)}
+                  {formatCost(total, plan.currency)}
                   {!current && delta !== undefined && (
                     <span className={total.gt(base) ? 'dpm-up' : 'dpm-down'}>{` ${delta}`}</span>
                   )}
@@ -382,6 +375,8 @@ function tierNote(view: PriceView, t: Translate): string | undefined {
  */
 function effectiveLabel(plan: PersistedSettings['plans'][number], t: Translate): string {
   if (plan.effectiveFrom === undefined) {
+    // A superseded rate knows its end without knowing where it began.
+    if (plan.effectiveTo !== undefined) return t('plan.ratePeriodUntil', { to: plan.effectiveTo })
     const observed = plan.provenance?.fetchedAt.slice(0, 10)
     return observed === undefined
       ? t('plan.unknownStart', { at: '—' })
@@ -392,16 +387,21 @@ function effectiveLabel(plan: PersistedSettings['plans'][number], t: Translate):
     : t('plan.effective', { from: plan.effectiveFrom, to: plan.effectiveTo })
 }
 
-/** One plan rate cell. */
-function rateCell(band: { cacheMiss: string; cacheHit: string; output: string }, bucket: Bucket): string {
+/** One plan rate cell, in that plan's own currency. */
+function rateCell(
+  plan: PersistedSettings['plans'][number],
+  band: { cacheMiss: string; cacheHit: string; output: string },
+  bucket: Bucket,
+): string {
   const value = bucket === 'miss' ? band.cacheMiss : bucket === 'hit' ? band.cacheHit : band.output
-  return `$${value}`
+  return `${SYMBOL[plan.currency]}${value}`
 }
 
 /** The per-turn list with expandable attempt details. */
-function TurnsSection({ turns, t, openTurn, onToggle }: {
+function TurnsSection({ turns, t, currency, openTurn, onToggle }: {
   turns: PriceView['turns']
   t: Translate
+  currency: Currency
   openTurn: number | null
   onToggle: (index: number) => void
 }): React.ReactElement {
@@ -430,7 +430,7 @@ function TurnsSection({ turns, t, openTurn, onToggle }: {
                   {peak ? t('turns.peak') : t('turns.offPeak')}
                 </span>
                 <span className="dpm-turn__cost dpm-num">
-                  {turn.priced === 0 ? t('turns.unpriced') : formatCost(turn.cost.total)}
+                  {turn.priced === 0 ? t('turns.unpriced') : formatCost(turn.cost.total, currency)}
                 </span>
               </span>
               <span className="dpm-turn__tokens dpm-num">
@@ -446,11 +446,11 @@ function TurnsSection({ turns, t, openTurn, onToggle }: {
               {open && (
                 <span className="dpm-turn__detail">
                   {turn.attempts.map(attempt => (
-                    <AttemptRows key={attempt.row.id} attempt={attempt} t={t} />
+                    <AttemptRows key={attempt.row.id} attempt={attempt} t={t} currency={currency} />
                   ))}
                   <span className="dpm-line dpm-line--total">
                     <span>{t('turns.subtotal')}</span>
-                    <span className="dpm-num"><b>{formatCost(turn.cost.total)}</b></span>
+                    <span className="dpm-num"><b>{formatCost(turn.cost.total, currency)}</b></span>
                   </span>
                 </span>
               )}
@@ -463,7 +463,7 @@ function TurnsSection({ turns, t, openTurn, onToggle }: {
 }
 
 /** One attempt's three bucket lines, or its unpriced reason. */
-function AttemptRows({ attempt, t }: { attempt: PricedAttempt; t: Translate }): React.ReactElement {
+function AttemptRows({ attempt, t, currency }: { attempt: PricedAttempt; t: Translate; currency: Currency }): React.ReactElement {
   const label = `${t('turns.attempt', { attempt: attempt.row.attempt })} · ${attempt.row.model ?? t('turns.noRoute')}`
   if (attempt.cost === undefined) {
     // An unpriced attempt still names its route: "which model had no plan" is
@@ -492,7 +492,7 @@ function AttemptRows({ attempt, t }: { attempt: PricedAttempt; t: Translate }): 
       {rows.map(([key, tokens, cost]) => (
         <span className="dpm-line" key={key}>
           <span>{t(key)}</span>
-          <span className="dpm-num">{`${formatTokens(tokens)} × ${formatCost(cost)}`}</span>
+          <span className="dpm-num">{`${formatTokens(tokens)} × ${formatCost(cost, currency)}`}</span>
         </span>
       ))}
     </span>

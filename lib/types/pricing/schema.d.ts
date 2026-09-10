@@ -23,10 +23,22 @@ export declare const provenanceSchema: z.ZodObject<{
     fetchedAt: z.ZodString;
     contentHash: z.ZodString;
 }, z.core.$strict>;
+/** A currency a set of published rates is denominated in. */
+export declare const currencySchema: z.ZodEnum<{
+    USD: "USD";
+    CNY: "CNY";
+}>;
+export type Currency = z.infer<typeof currencySchema>;
 /**
  * One pricing plan. `source: 'official'` plans are immutable catalog entries
  * the user copies before editing; `source: 'manual'` plans are user-owned.
  * Rates are per million tokens, as decimal strings.
+ *
+ * A plan carries the currency its publisher printed, and no conversion is ever
+ * applied: DeepSeek publishes the same rates as USD on the English page and as
+ * CNY on the Chinese one, and the two are not the same numbers (the English
+ * page rounds its conversion). An amount therefore always reads in the
+ * currency of the plan that produced it.
  */
 export declare const pricingPlanSchema: z.ZodObject<{
     id: z.ZodString;
@@ -37,7 +49,10 @@ export declare const pricingPlanSchema: z.ZodObject<{
     }>;
     provider: z.ZodLiteral<"deepseek-official">;
     modelIds: z.ZodArray<z.ZodString>;
-    currency: z.ZodLiteral<"USD">;
+    currency: z.ZodEnum<{
+        USD: "USD";
+        CNY: "CNY";
+    }>;
     effectiveFrom: z.ZodOptional<z.ZodString>;
     effectiveTo: z.ZodOptional<z.ZodString>;
     schedule: z.ZodNullable<z.ZodObject<{
@@ -92,7 +107,10 @@ export declare const persistedSettingsSchema: z.ZodObject<{
         }>;
         provider: z.ZodLiteral<"deepseek-official">;
         modelIds: z.ZodArray<z.ZodString>;
-        currency: z.ZodLiteral<"USD">;
+        currency: z.ZodEnum<{
+            USD: "USD";
+            CNY: "CNY";
+        }>;
         effectiveFrom: z.ZodOptional<z.ZodString>;
         effectiveTo: z.ZodOptional<z.ZodString>;
         schedule: z.ZodNullable<z.ZodObject<{

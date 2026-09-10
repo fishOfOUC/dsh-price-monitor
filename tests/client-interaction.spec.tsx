@@ -235,6 +235,58 @@ describe('plan settings panel', () => {
     expect(updates[0]![0]).toBe(CATALOG_KEY)
     expect((updates[0]![1] as { selectedPlanId: string }).selectedPlanId).toBe(officialSeedPlans[1]!.id)
   })
+
+  it('adds a flat yuan plan whose rate period only ends', () => {
+    const updates: [string, unknown][] = []
+    const props = {
+      pluginSettings: { [CATALOG_KEY]: defaultSettings() },
+      updatePluginSetting: (key: string, value: unknown) => updates.push([key, value]),
+      close: () => {},
+    } as unknown as SidebarSettingsRenderProps
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    act(() => { root!.render(<PricePlanSettings {...props} />) })
+
+    act(() => { [...container!.querySelectorAll('button')].find(b => b.textContent?.includes(en['settings.add']))!.click() })
+    // React tracks an input's last value, so a plain `.value = x` is seen as no
+    // change; go through the prototype setter to make the edit observable.
+    const set = (selector: string, value: string): void => {
+      const element = container!.querySelector(selector) as HTMLInputElement | HTMLSelectElement
+      expect(element, selector).not.toBeNull()
+      const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')!.set!
+      act(() => {
+        setter.call(element, value)
+        // React reads text inputs from `input` and selects from `change`.
+        element.dispatchEvent(new Event('input', { bubbles: true }))
+        element.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    }
+    set('#dpm-name', 'ds-v4-flash-涨价前')
+    set('#dpm-currency', 'CNY')
+    set('#dpm-effectiveTo', '2026-08-16')
+    // A single price: the pre-hike phase had no peak/off-peak tiers.
+    const peak = container.querySelector('.dpm-check input') as HTMLInputElement
+    act(() => { peak.click() })
+    set('#dpm-cacheMiss', '1')
+    set('#dpm-cacheHit', '0.02')
+    set('#dpm-output', '2')
+    act(() => {
+      const save = [...container!.querySelectorAll('button')].find(b => b.textContent?.includes(en['action.save']))
+      save!.click()
+    })
+
+    const written = updates[0]![1] as { selectedPlanId: string; plans: Record<string, unknown>[] }
+    const added = written.plans.find(plan => plan['name'] === 'ds-v4-flash-涨价前')
+    expect(added).toBeDefined()
+    expect(added!['currency']).toBe('CNY')
+    expect(added!['schedule']).toBeNull()
+    expect(added!['effectiveTo']).toBe('2026-08-16')
+    expect(added!['effectiveFrom']).toBeUndefined()
+    expect(added!['ratesPerMillion']).toEqual({ offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '2' } })
+    expect(written.selectedPlanId).toBe(added!['id'])
+  })
 })
 
 describe('plan switching reprices the tab', () => {

@@ -46,6 +46,7 @@ export declare const en: {
     readonly 'plan.source': "Source: {source}";
     readonly 'plan.effective': "Rates {from} → {to}";
     readonly 'plan.effectiveOpen': "Rates from {from}";
+    readonly 'plan.ratePeriodUntil': "Rates until {to}";
     readonly 'plan.unknownStart': "Rate period start unknown · snapshot {at}";
     readonly 'plan.perMillion': "per 1M tokens";
     readonly 'plan.peakColumn': "Peak";
@@ -93,11 +94,14 @@ export declare const en: {
     readonly 'settings.basis': "Every request of the session is priced at the selected plan’s rates.";
     readonly 'settings.plans': "Plans";
     readonly 'settings.add': "Add plan";
+    readonly 'settings.editTitle': "Edit plan";
     readonly 'settings.edit': "Edit";
     readonly 'settings.name': "Name";
     readonly 'settings.models': "Models (comma separated)";
+    readonly 'settings.currency': "Currency";
     readonly 'settings.effectiveFrom': "Rate period from";
-    readonly 'settings.effectiveTo': "Rate period to (optional)";
+    readonly 'settings.effectiveTo': "Rate period until";
+    readonly 'settings.ratePeriodHint': "The rate period only labels the plan card; leave either end empty when it is unknown. It never changes an amount.";
     readonly 'settings.peakTiers': "Peak/off-peak tiers";
     readonly 'settings.cacheMiss': "Cache miss";
     readonly 'settings.cacheHit': "Cache hit";
@@ -105,11 +109,10 @@ export declare const en: {
     readonly 'settings.peakMiss': "Peak miss";
     readonly 'settings.peakHit': "Peak hit";
     readonly 'settings.peakOutput': "Peak output";
-    readonly 'settings.usdNote': "Rates are USD per 1M tokens.";
+    readonly 'settings.currencyNote': "A plan keeps the currency its publisher printed: DeepSeek publishes USD in English and CNY in Chinese, and the two are not the same numbers. Nothing is converted, so an amount always reads in the selected plan’s currency.";
     readonly 'settings.deleteConfirm': "Delete this plan?";
     readonly 'settings.lastPlan': "The last remaining plan cannot be deleted.";
     readonly 'settings.invalidRates': "Every rate must be a non-negative decimal.";
-    readonly 'settings.unknownStart': "The rate period only labels the plan card; no amount depends on it. Leave the start empty when it is unknown.";
 };
 /** Chinese dictionary (same key set as {@link en}). */
 export declare const zh: Record<keyof typeof en, string>;

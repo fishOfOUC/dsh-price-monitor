@@ -14,6 +14,7 @@
 
 import { useState } from 'react'
 import type { SidebarSettingsRenderProps } from 'dsh-better-sidebar/client/service'
+import type { Currency } from '../pricing/index.ts'
 import {
   defaultSettings,
   parsePersistedSettings,
@@ -22,12 +23,14 @@ import {
 } from '../pricing/index.ts'
 import { t as translate, type PriceMonitorKey, type Translate } from './locales.ts'
 import { CATALOG_KEY, SETTINGS_KEY } from './settings-write.ts'
+import { CURRENCIES, SYMBOL } from './money.ts'
 
 /** An empty manual-plan draft (rates deliberately blank so a typo is visible). */
 interface Draft {
   id?: string
   name: string
   models: string
+  currency: Currency
   effectiveFrom: string
   effectiveTo: string
   peak: boolean
@@ -41,10 +44,10 @@ interface Draft {
 
 const EMPTY_DRAFT: Draft = {
   name: '',
-  models: 'deepseek-v4-flash',
-  effectiveFrom: new Date().toISOString().slice(0, 10),
+  models: 'deepseek-flash',
+  currency: 'USD',
+  effectiveFrom: '',
   effectiveTo: '',
-  // (An empty start is accepted above and means "no known start".)
   peak: true,
   cacheMiss: '0.22',
   cacheHit: '0.007',
@@ -88,13 +91,11 @@ function planFromDraft(draft: Draft, fallbackId: string): PricingPlan | undefine
     source: 'manual',
     provider: 'deepseek-official',
     modelIds,
-    currency: 'USD',
-    // The rate period is a label for the plan card, so an empty start (unknown
-    // start) leaves a declared end meaningless: it is dropped too.
+    currency: draft.currency,
+    // The rate period is a label for the plan card, and either end may stand
+    // alone: a superseded rate knows when it ended, not when it began.
     ...draft.effectiveFrom.trim() === '' ? {} : { effectiveFrom: draft.effectiveFrom.trim() },
-    ...draft.effectiveFrom.trim() === '' || draft.effectiveTo.trim() === ''
-      ? {}
-      : { effectiveTo: draft.effectiveTo.trim() },
+    ...draft.effectiveTo.trim() === '' ? {} : { effectiveTo: draft.effectiveTo.trim() },
     schedule: draft.peak
       ? {
         timezone: 'UTC',
@@ -113,6 +114,7 @@ function draftOf(plan: PricingPlan): Draft {
     id: plan.source === 'official' ? undefined : plan.id,
     name: plan.source === 'official' ? `${plan.name} (copy)` : plan.name,
     models: plan.modelIds.join(', '),
+    currency: plan.currency,
     effectiveFrom: plan.effectiveFrom ?? '',
     effectiveTo: plan.effectiveTo ?? '',
     peak: peak !== undefined,
@@ -148,6 +150,9 @@ export function PricePlanSettings(props: SidebarSettingsRenderProps): React.Reac
     props.updatePluginSetting(CATALOG_KEY, next)
   }
   const edit = (update: (current: PersistedSettings) => PersistedSettings): void => commit(update(catalog))
+  // A new plan starts in the currency the user is already looking at.
+  const selectedCurrency: Currency =
+    catalog.plans.find(plan => plan.id === catalog.selectedPlanId)?.currency ?? 'USD'
 
   const saveDraft = (): void => {
     if (draft === null) return
@@ -236,7 +241,11 @@ export function PricePlanSettings(props: SidebarSettingsRenderProps): React.Reac
       {draft === null
         ? (
           <div className="dpm-buttons">
-            <button type="button" className="dpm-button" onClick={() => setDraft({ ...EMPTY_DRAFT })}>
+            <button
+              type="button"
+              className="dpm-button"
+              onClick={() => setDraft({ ...EMPTY_DRAFT, currency: selectedCurrency })}
+            >
               {translate('settings.add')}
             </button>
           </div>
@@ -245,7 +254,7 @@ export function PricePlanSettings(props: SidebarSettingsRenderProps): React.Reac
 
       {error !== null && <p className="dpm-note dpm-note--error">{error}</p>}
       <p className="dpm-note">{translate('settings.hint')}</p>
-      <p className="dpm-note">{translate('settings.usdNote')}</p>
+      <p className="dpm-note">{translate('settings.currencyNote')}</p>
     </div>
   )
 }
@@ -270,19 +279,29 @@ function DraftEditor({ draft, t, onChange, onCancel, onSave }: {
       />
     </div>
   )
-  const unknownStart = draft.effectiveFrom.trim() === ''
   return (
     <div className="dpm-dialog">
-      <div className="dpm-dialog__title">{t('settings.add')}</div>
+      <div className="dpm-dialog__title">{t(draft.id === undefined ? 'settings.add' : 'settings.editTitle')}</div>
       {field('name', 'settings.name')}
       {field('models', 'settings.models')}
+      <div className="dpm-field">
+        <label className="dpm-field__label" htmlFor="dpm-currency">{t('settings.currency')}</label>
+        <select
+          id="dpm-currency"
+          className="dpm-input"
+          value={draft.currency}
+          onChange={(event) => onChange({ ...draft, currency: event.target.value === 'CNY' ? 'CNY' : 'USD' })}
+        >
+          {CURRENCIES.map(code => <option key={code} value={code}>{`${code} (${SYMBOL[code]})`}</option>)}
+        </select>
+      </div>
       <div className="dpm-grid2">
         {field('effectiveFrom', 'settings.effectiveFrom')}
-        {/* The period describes the rates rather than gating them, so an
-            unknown start leaves a declared end with nothing to bracket. */}
-        {unknownStart ? <div className="dpm-field" /> : field('effectiveTo', 'settings.effectiveTo')}
+        {/* Either end may stand alone: a superseded rate knows when it ended
+            without knowing when it began. */}
+        {field('effectiveTo', 'settings.effectiveTo')}
       </div>
-      {unknownStart && <p className="dpm-note">{t('settings.unknownStart')}</p>}
+      <p className="dpm-note">{t('settings.ratePeriodHint')}</p>
       <label className="dpm-check">
         <input
           type="checkbox"

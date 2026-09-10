@@ -137,8 +137,8 @@ function amountsIn(markup: string): number[] {
 }
 
 /** The first amount inside the hero element (the session total). */
-function heroTotal(markup: string): number {
-  const hero = /dpm-hero__value">\$(\d+\.\d+)/.exec(markup)
+function heroTotal(markup: string, symbol = '\\$'): number {
+  const hero = new RegExp(`dpm-hero__value">${symbol}(\\d+\\.\\d+)`).exec(markup)
   expect(hero, 'hero total rendered').not.toBeNull()
   return Number(hero![1])
 }
@@ -357,6 +357,32 @@ describe('rendered tab', () => {
     const markup = renderToStaticMarkup(<PriceMonitorTab {...tabProps(store, LEDGER)} />)
     for (const plan of officialSeedPlans) expect(markup).toContain(plan.name)
     expect(markup).toContain(en['plan.compare'])
+  })
+
+  it('shows a plan’s amounts in its own currency and drops cross-currency ratios', () => {
+    const yuanFlash = {
+      id: 'manual:yuan',
+      name: 'flash 元',
+      source: 'manual',
+      provider: 'deepseek-official',
+      modelIds: ['deepseek-flash'],
+      currency: 'CNY',
+      schedule: null,
+      ratesPerMillion: { offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '4' } },
+    } as const
+    const catalog = { ...defaultSettings(), plans: [defaultSettings().plans[0]!, yuanFlash], selectedPlanId: 'manual:yuan' }
+    const markup = renderToStaticMarkup(<PriceMonitorTab {...tabProps(storeWith(catalog).store, LEDGER)} />)
+
+    // A flat ¥1 / ¥0.02 / ¥4 plan over the fixture ledger: turn 1 contributes
+    // 1×1 + 2×0.02 + 0.5×4 and turn 2 0.1×1 + 0.01×4, with the usage-less
+    // attempt still excluded.
+    expect(heroTotal(markup, '¥')).toBeCloseTo(1 + 2 * 0.02 + 0.5 * 4 + 0.1 + 0.01 * 4, 8)
+    expect(markup).toContain('¥1')
+    expect(markup).not.toContain('$0.150000')
+    // The comparison spans two currencies, so it lists both totals without a
+    // percentage that would divide yuan by dollars.
+    expect(markup).toContain(`${en['plan.compare']}`)
+    expect(markup).not.toMatch(/[+−]\d+%/)
   })
 })
 

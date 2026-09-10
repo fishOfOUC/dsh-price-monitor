@@ -56,10 +56,20 @@ export const provenanceSchema = z.object({
   contentHash: z.string(),
 }).strict()
 
+/** A currency a set of published rates is denominated in. */
+export const currencySchema = z.enum(['USD', 'CNY'])
+export type Currency = z.infer<typeof currencySchema>
+
 /**
  * One pricing plan. `source: 'official'` plans are immutable catalog entries
  * the user copies before editing; `source: 'manual'` plans are user-owned.
  * Rates are per million tokens, as decimal strings.
+ *
+ * A plan carries the currency its publisher printed, and no conversion is ever
+ * applied: DeepSeek publishes the same rates as USD on the English page and as
+ * CNY on the Chinese one, and the two are not the same numbers (the English
+ * page rounds its conversion). An amount therefore always reads in the
+ * currency of the plan that produced it.
  */
 export const pricingPlanSchema = z.object({
   id: z.string().min(1),
@@ -67,13 +77,13 @@ export const pricingPlanSchema = z.object({
   source: z.enum(['official', 'manual']),
   provider: z.literal('deepseek-official'),
   modelIds: z.array(z.string().min(1)).min(1),
-  currency: z.literal('USD'),
+  currency: currencySchema,
   /**
-   * First UTC date this plan's rates applied, for the plan card's description.
-   * Absent means the start is unknown — an official snapshot observes today's
-   * rates, it never learns when they began. The period is a label only: the
-   * selected plan prices every attempt whatever date it ran, so no amount
-   * depends on this window.
+   * The UTC dates this plan's rates applied, for the plan card's description.
+   * Either end may be absent on its own: an official snapshot observes today's
+   * rates and knows no start, while a superseded rate knows its end. The
+   * period is a label only — the selected plan prices every attempt whatever
+   * date it ran, so no amount depends on this window.
    */
   effectiveFrom: isoDate.optional(),
   effectiveTo: isoDate.optional(),
@@ -84,9 +94,6 @@ export const pricingPlanSchema = z.object({
   }).strict(),
   provenance: provenanceSchema.optional(),
 }).strict().superRefine((plan, context) => {
-  if (plan.effectiveFrom === undefined && plan.effectiveTo !== undefined) {
-    context.addIssue({ code: 'custom', message: 'a plan with no known start cannot also declare an end' })
-  }
   if (plan.effectiveFrom !== undefined && plan.effectiveTo !== undefined
     && plan.effectiveTo <= plan.effectiveFrom) {
     context.addIssue({ code: 'custom', message: 'effectiveTo must be after effectiveFrom' })

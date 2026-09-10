@@ -8,10 +8,12 @@
 
 export {
   applyOfficialCandidate,
+  currencySchema,
   parsePersistedSettings,
   persistedSettingsSchema,
   pricingPlanSchema,
   rateBandSchema,
+  type Currency,
   type PeakSchedule,
   type PersistedSettings,
   type PricingPlan,

@@ -81,13 +81,45 @@ includes reasoning tokens, so reasoning is never billed twice.
 
 ## Pricing plans
 
-Rates are USD per million tokens stored as decimal strings; every product and
-sum stays a `Decimal` until display.
+Rates are per million tokens, stored as decimal strings; every product and sum
+stays a `Decimal` until display.
 
 | Plan source | Editable | Created by |
 |---|---|---|
 | `official` | no — duplicate it first | the bundled snapshot, or an official refresh |
 | `manual` | yes | the settings panel |
+
+### Currency
+
+A plan carries the currency its publisher printed, and **no conversion is ever
+applied**: DeepSeek publishes the same rates as USD on the English page and as
+CNY on the Chinese one, and those are not the same numbers — the Chinese column
+is the primary one and the English column is its rounded conversion (1 USD ≈
+6.818 CNY on the 2026-09-10 snapshot, which is why flash reads `$0.003 / $0.15 /
+$0.6` in English and `¥0.02 / ¥1 / ¥4` in Chinese).
+
+An amount therefore always reads in the currency of the plan that produced it,
+and `$0.15` and `¥1` are never silently added together. The same rule governs
+the comparison list: rows of different currencies still list their totals, but
+no percentage is shown between them, because a ratio across currencies would be
+meaningless. Copy an official plan into a manual one to restate it in the other
+currency.
+
+The bundled official snapshot and the refresh route both use the English page's
+USD figures. If you account in CNY, add manual plans in CNY — a plan's
+`modelIds` never affects an amount, so a CNY plan prices any session.
+
+### Price phases
+
+DeepSeek changes these rates over time, so the same session can be compared
+across phases by saving one plan per phase and switching between them; the
+comparison list then shows every phase's total for the very same tokens. Record
+when each phase applied in its rate period (`effectiveFrom` / `effectiveTo`) —
+that period is a label for the plan card and never gates pricing, so the
+selected plan prices the whole session whatever dates its attempts fall on.
+
+A superseded phase knows when it ended without knowing when it began, so either
+end of the period may be filled in on its own.
 
 ### How a session is priced
 
