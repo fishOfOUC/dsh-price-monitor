@@ -1,5 +1,5 @@
 ---
-description: "dsh-price-monitor: per-session DeepSeek API cost ledger rendered as a dsh-better-sidebar tab."
+description: "dsh-price-monitor: a dsh-better-sidebar tab that prices a DeepSeek Harness session's provider-reported token usage."
 kind: "user-guide"
 ---
 
@@ -9,6 +9,27 @@ Session cost monitoring for DeepSeek Harness: a host-side session projection
 folds the durable log into a per-attempt token ledger, and a
 [dsh-better-sidebar](https://github.com/topics/dsh-better-sidebar) tab prices
 that ledger with an official or hand-entered plan.
+
+## Requirements — read this first
+
+**This plugin has no user interface of its own. It renders entirely as a tab of
+[dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar), which
+must be installed and mounted first.** Without it:
+
+- there is no place for the cost view to appear — this package registers a
+  single sidebar tab and a plan-settings panel, nothing else;
+- the client half refuses to activate, and says so
+  (`dsh-price-monitor requires Better Sidebar features: pluginSettings, stateSubscription`),
+  rather than loading a half-working panel.
+
+| Requirement | Why |
+|---|---|
+| DeepSeek Harness with the `web` profile | the plugin ships a Host half (a session projection and an HTTP route) and a browser half |
+| [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) **≥ 0.18.0**, mounted and enabled | the tab, the settings panel, the plan catalog's storage, and the projection read all come from its service API (`ctx.betterSidebar`, `stateSubscription`, `pluginSettings`) — see [Install](#install) |
+| A `deepseek-official` route in the session | pricing attributes cost to that provider; anything else is reported as unpriced rather than guessed |
+
+The host half (the token ledger) works without the sidebar, but nothing reads
+it: the ledger has no UI besides that tab.
 
 ## What it shows
 
@@ -138,7 +159,21 @@ route, which:
 
 ## Install
 
-Requires DSH with the `web` profile and `dsh-better-sidebar` ≥ 0.18.0 mounted.
+Install and mount **dsh-better-sidebar first** — this plugin's tab appears in
+that sidebar's `+` menu, and its plan settings appear in that sidebar's
+*Side card* settings page. Then install this plugin:
+
+```sh
+# 1. the sidebar this plugin renders inside (skip if you already have it)
+dsh plugin --profile web add dsh-better-sidebar
+
+# 2. this plugin
+dsh plugin --profile web add dsh-price-monitor
+```
+
+Both commands append a bundle to the profile and restart-time mount; restart
+DSH after installing (the Host halves changed), then open the sidebar's `+`
+menu and pick **Session cost**.
 
 ### Development install (from this checkout)
 
@@ -183,6 +218,10 @@ served from the host's in-memory copy until it restarts.
 ```sh
 dsh plugin --profile web add dsh-price-monitor
 ```
+
+The same sidebar-first rule applies: with no mounted dsh-better-sidebar the
+client half throws at activation instead of silently doing nothing, so check
+that the sidebar itself is working before filing a bug here.
 
 ## Privacy and network behavior
 

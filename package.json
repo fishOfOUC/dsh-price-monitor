@@ -1,7 +1,7 @@
 {
   "name": "dsh-price-monitor",
   "version": "0.1.0",
-  "description": "DSH web plugin: per-session DeepSeek API cost ledger (projection-driven) with official and manual pricing plans, rendered as a dsh-better-sidebar tab.",
+  "description": "DSH web plugin: per-session API cost monitor. Renders as a dsh-better-sidebar tab, which must be installed separately — this package provides no UI of its own.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -77,5 +77,14 @@
     "tsdown": "^0.22.2",
     "typescript": "^5.6.0",
     "vitest": "^4.1.8"
-  }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "dsh-better-sidebar",
+    "cost",
+    "pricing",
+    "tokens"
+  ]
 }
