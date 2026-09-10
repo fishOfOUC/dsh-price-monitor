@@ -2,8 +2,8 @@
 /**
  * Interactive tab tests in a real DOM: expanding a turn reveals each billed
  * attempt (including its unpriced reason), and switching a plan writes the
- * whole catalog through the sidebar's settings route without touching the
- * session ledger.
+ * whole catalog through the sidebar's settings route, reprices every amount,
+ * and leaves the session ledger untouched.
  */
 
 import { act } from 'react'
@@ -12,9 +12,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Context as CordisContext } from '@deepseek-ai/cordis'
 import type { SidebarPrefs, SidebarSnapshot, SidebarStore, TabComponentProps } from 'dsh-better-sidebar/client/service'
 import { PriceMonitorTab } from '../src/client/PriceMonitorTab.tsx'
+import { PricePlanSettings } from '../src/client/PricePlanSettings.tsx'
 import { bindTranslate, en, type PriceMonitorKey } from '../src/client/locales.ts'
 import { CATALOG_KEY, SETTINGS_KEY } from '../src/client/settings-write.ts'
 import { defaultSettings, officialSeedPlans } from '../src/pricing/index.ts'
+import type { SidebarSettingsRenderProps } from 'dsh-better-sidebar/client/service'
 import type { PriceMonitorUsageView } from '../src/projection-types.ts'
 
 /** Resolve a key from the English dictionary with `{name}` substitution. */
@@ -30,7 +32,7 @@ beforeAll(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 })
 
-/** Two attempts in one turn: a priced one and a gateway one no plan can price. */
+/** Two attempts in one turn: a priced one and one whose usage never arrived. */
 const LEDGER: PriceMonitorUsageView = {
   turns: [{
     turn: 7,
@@ -59,9 +61,9 @@ const LEDGER: PriceMonitorUsageView = {
         step: 1,
         attempt: 0,
         startedAt: Date.UTC(2026, 8, 14, 20, 2),
-        provider: 'other-gateway',
-        model: 'mystery',
-        completeness: 'complete',
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+        completeness: 'usage-missing',
       },
     ],
   }],
@@ -147,11 +149,11 @@ describe('turn expansion', () => {
     act(() => { turn.click() })
     const expanded = node.querySelector('.dpm-turn') as HTMLElement
     expect(expanded.getAttribute('aria-expanded')).toBe('true')
-    // Both attempts render: the priced one with its model, the other unpriced.
+    // Both attempts render: the priced one with its model, the other with its
+    // reason for staying out of the money.
     expect(node.textContent).toContain('deepseek-v4-flash')
-    expect(node.textContent).toContain('mystery')
     expect(node.textContent).toContain(en['turns.unpriced'])
-    expect(node.textContent).toContain(en['reason.not-official'])
+    expect(node.textContent).toContain(en['reason.no-usage'])
     expect(node.textContent).toContain(en['turns.subtotal'])
 
     // Collapsing hides them again.
@@ -202,16 +204,62 @@ describe('plan switching', () => {
   })
 })
 
-describe('mode toggle', () => {
-  it('switches to reprice mode through the same write path', async () => {
-    const { store, writes } = makeStore(defaultSettings())
+describe('plan settings panel', () => {
+  it('selects a plan, states the pricing basis, and edits rates', () => {
+    const updates: [string, unknown][] = []
+    const props = {
+      pluginSettings: { [CATALOG_KEY]: defaultSettings() },
+      updatePluginSetting: (key: string, value: unknown) => updates.push([key, value]),
+      close: () => {},
+    } as unknown as SidebarSettingsRenderProps
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    act(() => { root!.render(<PricePlanSettings {...props} />) })
+
+    // The selected plan is the pricing basis, and the panel says so.
+    expect(container.textContent).toContain(en['settings.basis'])
+    expect(container.textContent).toContain(en['settings.selected'])
+    for (const plan of officialSeedPlans) expect(container.textContent).toContain(plan.name)
+    // The retired controls are gone: no calculation mode, no model aliases.
+    expect(container.querySelector('#dpm-mode')).toBeNull()
+    expect(container.textContent).not.toContain('alias')
+    expect(container.querySelector('#dpm-alias-from')).toBeNull()
+
+    const select = container.querySelector('#dpm-selected') as HTMLSelectElement
+    act(() => {
+      select.value = officialSeedPlans[1]!.id
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(updates).toHaveLength(1)
+    expect(updates[0]![0]).toBe(CATALOG_KEY)
+    expect((updates[0]![1] as { selectedPlanId: string }).selectedPlanId).toBe(officialSeedPlans[1]!.id)
+  })
+})
+
+describe('plan switching reprices the tab', () => {
+  it('moves the hero, the breakdown, and the turn rows to the clicked plan', async () => {
+    const { store } = makeStore(defaultSettings())
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ value: {} }), { status: 200 })))
     const node = render(store)
+    const pro = officialSeedPlans[1]!
+    const hero = (): string => (node.querySelector('.dpm-hero__value') as HTMLElement).textContent ?? ''
+    const rows = (): string[] => [...node.querySelectorAll('.dpm-turn__cost')].map(element => element.textContent ?? '')
+    const rates = (): string => (node.querySelector('.dpm-table') as HTMLElement).textContent ?? ''
+
+    // 1M cache-miss tokens off-peak: $0.15 at the flash rates, $0.66 at pro's.
+    expect(hero()).toBe('$0.150000')
+    expect(rows()).toEqual(['$0.150000'])
+    const flashRates = rates()
+
     const chips = [...node.querySelectorAll('.dpm-chip')] as HTMLElement[]
-    const modeChip = chips.find(element => element.textContent === en['mode.effective'])
-    expect(modeChip).toBeDefined()
-    await act(async () => { modeChip!.click() })
-    expect(writes).toHaveLength(1)
-    expect(node.textContent).toContain(en['mode.reprice'])
+    await act(async () => { chips.find(element => element.textContent === pro.name)!.click() })
+
+    expect(hero()).toBe('$0.660000')
+    expect(rows()).toEqual(['$0.660000'])
+    expect(rates()).not.toBe(flashRates)
+    // The attempt with no reported usage stays out of the money either way.
+    expect(node.textContent).toContain(en['total.known'])
+    expect(node.textContent).toContain(en['reason.no-usage'])
   })
 })

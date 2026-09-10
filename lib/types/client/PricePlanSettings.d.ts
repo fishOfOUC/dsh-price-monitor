@@ -1,8 +1,8 @@
 /**
  * The plan settings panel shown in the sidebar's settings popup
  * (`settings.render`). It edits the same catalog the tab reads: selection,
- * calculation mode, manual plan create/duplicate/edit/delete, and the
- * restore-built-ins action for an unreadable stored blob.
+ * manual plan create/duplicate/edit/delete, and the restore-built-ins action
+ * for an unreadable stored blob.
  *
  * Official plans are read-only; the panel duplicates one into a manual plan
  * before any rate edit, and it refuses to delete the last remaining plan.

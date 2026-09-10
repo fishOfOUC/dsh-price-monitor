@@ -26,26 +26,27 @@ must be installed and mounted first.** Without it:
 |---|---|
 | DeepSeek Harness with the `web` profile | the plugin ships a Host half (a session projection and an HTTP route) and a browser half |
 | [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) **≥ 0.18.0**, mounted and enabled | the tab, the settings panel, the plan catalog's storage, and the projection read all come from its service API (`ctx.betterSidebar`, `stateSubscription`, `pluginSettings`) — see [Install](#install) |
-| A `deepseek-official` route in the session | pricing attributes cost to that provider; anything else is reported as unpriced rather than guessed |
+| A plan for the rates you want to see | the selected plan prices the session; without one, every request is listed as unpriced rather than guessed |
 
 The host half (the token ledger) works without the sidebar, but nothing reads
 it: the ledger has no UI besides that tab.
 
 ## What it shows
 
-- **Total cost** for the current session, with the exact three-bucket split
-  (cache miss / cache hit / output) in both tokens and USD.
+- **Total cost** for the current session at the selected plan's rates, with the
+  exact three-bucket split (cache miss / cache hit / output) in both tokens and
+  USD.
 - **Per-turn list**: every turn with its tokens and cost, expandable to each
   billed request attempt — including attempts that retried, switched model, or
   cannot be priced.
 - **Plan card** with the selected plan's rates and a same-tokens comparison
   across every saved plan.
-- **Partial honesty**: an attempt whose usage is missing, whose provider is not
-  `deepseek-official`, whose model matches no plan, whose plan is not in force
-  at that time, or that reported cache-write tokens a plan has no rate for is
-  excluded from the *money* and listed with its reason. Token counts, being
-  provider-reported facts, are still summed and shown: unknown cost never
-  blanks a known count, and unknown is never shown as zero.
+- **Partial honesty**: an attempt whose usage never arrived or failed
+  validation, whose cache buckets cannot be separated, or that reported
+  cache-write tokens the plan has no rate for is excluded from the *money* and
+  listed with its reason. Token counts, being provider-reported facts, are still
+  summed and shown: unknown cost never blanks a known count, and unknown is
+  never shown as zero.
 
 ## Architecture
 
@@ -88,55 +89,41 @@ sum stays a `Decimal` until display.
 | `official` | no — duplicate it first | the bundled snapshot, or an official refresh |
 | `manual` | yes | the settings panel |
 
-### Model aliases
+### How a session is priced
 
-A deployment may report a model under an id no plan names — this harness
-reports `deepseek-v4.1-flash-expires-on-0910` for the model the page lists as
-`deepseek-flash`. The settings panel's **Model aliases** map one reported id
-onto a model a plan names, so such a session is priced without duplicating
-(and thereby detaching) a read-only official plan:
+**The selected plan is the whole pricing basis.** It prices every attempt of
+the session, so switching a plan moves the hero total, the three-bucket
+breakdown, the per-turn rows, and the comparison list together — the reason to
+switch is exactly "what would these tokens cost at other rates", and the model
+and provider that produced them are what the substitution replaces. Nothing
+about an attempt's route gates an amount: a request whose model no plan names, a
+request that ran on another gateway, and a request with no route recorded at all
+are all priced at the selected plan's rates.
 
-```
-deepseek-v4.1-flash-expires-on-0910 → deepseek-flash
-```
+Only the token facts can leave an attempt out of the money: usage that never
+arrived or failed validation, cache buckets that cannot be separated, and
+cache-write tokens a plan has no rate for. Their tokens are still counted, and
+the hero switches to "known cost" with the reason tally, so an unknown amount
+never becomes a zero.
 
-Attribution consults the alias map before the plan's `modelIds`; the
-same-tokens comparison and repricing mode need no alias at all, since they
-substitute the model by design. An alias pointing at a model no plan names
-leaves the attempt unpriced — the plugin never guesses a rate for an unknown id.
+A plan's declared rate period (`effectiveFrom` / `effectiveTo`) is a label for
+the plan card — when those rates applied — and never a gate: the selected plan
+prices the whole session whatever dates its attempts fall on. The bundled
+snapshot omits a start deliberately, because a fetch observes today's rates
+rather than learning when they began.
 
-### Effective windows
+Peak/off-peak uses each attempt's UTC start time: Monday–Friday, 01:00–04:00 and
+06:00–10:00 UTC are peak (left-closed, right-open), and a plan without a peak
+band prices everything at its single rate. The bundled snapshot is dated
+2026-09-10 and shows its source link in the UI; it prices the two models the
+page lists — the flash model and the pro model — with one flash price covering
+the ids that model has been listed or reported under (`deepseek-flash`,
+`deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`).
 
-A plan may declare when it is in force. `effectiveFrom` is optional, and its
-absence means **no known start**: the plan applies back to the beginning of the
-log and is superseded by any later-fetched plan naming the same model. An
-official snapshot omits it deliberately — a fetch observes today's rates, it
-does not learn when they began — so historical sessions are priced with the
-best rates the plugin has rather than showing nothing. A hand-entered
-historical plan states its window; an attempt outside every window is reported
-as `no plan version in force at that time`, which is a different fix from
-`no matching plan` (the model is named by nobody).
-
-Peak/off-peak uses each attempt's UTC start time: Monday–Friday,
-01:00–04:00 and 06:00–10:00 UTC are peak (left-closed, right-open). The bundled
-snapshot is dated 2026-09-10 and shows its source link in the UI; it prices the
-two models the page lists — the flash model and the pro model — with one flash
-price covering the ids that model has been listed or reported under
-(`deepseek-flash`, `deepseek-v4-flash`, `deepseek-v4-flash-vision-exp`).
-
-Two calculation modes, never conflated:
-
-- **As-of-time pricing** — each attempt is attributed to the plan in force when
-  it ran (provider and model matter, so an unaliased model or a non-DeepSeek
-  provider stays explicitly unpriced). The hero's aside shows the counterfactual
-  at the selected plan, so switching a plan answers "what would this cost at
-  other rates" without changing the actual number.
-- **Reprice everything** — a simulated counterfactual over the same tokens:
-  every attempt whose token facts are usable is priced at the *selected* plan's
-  rates, regardless of which model or provider produced it, because substituting
-  the model is the entire point. Only unusable token facts (missing or invalid
-  usage, an unseparable cache split, cache-write tokens with no rate) stay
-  unpriced. The UI labels the mode as a simulation.
+Stored settings carry a `schemaVersion`. A readable version 1 blob — which also
+held a calculation mode and a model-alias map — is upgraded in place, keeping
+the user's plans and selection; both fields are gone because neither can change
+an amount under a single pricing basis.
 
 ## Official price refresh
 
@@ -260,9 +247,9 @@ settings panel. The bundled official snapshot is the offline default.
 | File | Covers |
 |---|---|
 | `tests/usage-ledger.spec.ts` | the fold: attempt lifecycle, retries, validation, contradictions, reference stability, cold/live parity, and cross-checks against the harness's `deriveTurnTokenUsage` |
-| `tests/pricing-engine.spec.ts` | peak boundaries, effective windows (unknown start, supersession), the two no-plan reasons, model aliases, token facts under partial pricing, both modes, decimal exactness, schema rejection |
+| `tests/pricing-engine.spec.ts` | peak boundaries, the selected plan as the sole basis (route, model, and rate period never gate an amount), switching plans reprices every layer, token facts under partial pricing, decimal exactness, schema rejection, and the v1 upgrade |
 | `tests/official-pricing.spec.ts` | both saved page fixtures (three-column and the renamed two-model layout) parse exactly; changed amounts, categories, headers, malformed ids, or footnote windows fail |
 | `tests/trust-fence.spec.ts` | loopback/trusted hosts pass; cross-site, opaque, and mismatched origins fail |
-| `tests/client.spec.tsx` | activation and the feature gate, catalog reads, and rendered totals equal to the sum of the turn rows |
-| `tests/client-interaction.spec.tsx` | expanding a turn reveals each attempt; plan and mode switches write the catalog and re-render; a failed write surfaces |
+| `tests/client.spec.tsx` | activation and the feature gate, catalog reads (including the v1 upgrade), the hero total equal to the sum of the turn rows, and a plan switch repricing hero, breakdown, and rows |
+| `tests/client-interaction.spec.tsx` | expanding a turn reveals each attempt; clicking a plan writes the catalog and reprices the rendered tab; a failed write surfaces |
 | `tests/built-artifacts.spec.ts` | the built entry points exist and behave; the client bundle is a valid loader factory; the route over real HTTP refuses GET/cross-site/foreign redirects and returns a candidate plus diff |

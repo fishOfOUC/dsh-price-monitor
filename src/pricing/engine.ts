@@ -4,9 +4,10 @@
  * boundary — no binary float ever carries an amount, and nothing is rounded
  * before the final aggregate.
  *
- * Peak/off-peak is chosen from an attempt's UTC start time; the effective
- * plan is chosen from its UTC calendar date (left-closed, right-open
- * effective window). Aggregation order is attempt → turn → session, and each
+ * The selected plan is the sole pricing basis: it prices every attempt of the
+ * session, so switching plans changes every amount, whether or not the attempt
+ * ran on a model that plan names. Peak/off-peak is chosen from an attempt's
+ * UTC start time. Aggregation order is attempt → turn → session, and each
  * layer carries the three cost buckets plus the total, so the per-turn rows
  * add up to the session card exactly.
  *
@@ -15,18 +16,14 @@
 
 import { Decimal } from 'decimal.js'
 import type { AttemptUsageRow, PriceMonitorUsageView, TurnUsageRow } from '../projection-types.ts'
-import type { PeakSchedule, PersistedSettings, PricingMode, PricingPlan, RateBand } from './schema.ts'
+import type { PeakSchedule, PersistedSettings, PricingPlan, RateBand } from './schema.ts'
 
 /** Why one attempt was not priced exactly. */
 export type AttemptPricingReason =
   | 'no-usage'
   | 'invalid'
-  | 'no-route'
-  | 'not-official'
-  /** No plan names this model (after the alias map). */
+  /** No plan is selected, so there is no rate to apply. */
   | 'no-plan'
-  /** A plan names it, but no version of that plan is in force at the attempt's time. */
-  | 'inactive-plan'
   | 'no-split'
   | 'cache-write'
 
@@ -64,7 +61,6 @@ export interface PricedTurn {
 
 /** The whole-session pricing result. */
 export interface PriceView {
-  readonly mode: PricingMode
   readonly selectedPlanId: string | undefined
   readonly turns: readonly PricedTurn[]
   readonly cost: AttemptCost
@@ -76,17 +72,12 @@ export interface PriceView {
     /** Priced attempts that used a peak band. */
     readonly peak: number
     /**
-     * Whether any priced attempt's plan declares a peak schedule. Distinguishes
-     * "this session ran entirely off-peak" from "this plan has no peak tiers",
-     * which are different facts and get different copy.
+     * Whether the selected plan declares a peak schedule. Distinguishes "this
+     * session ran entirely off-peak" from "this plan has no peak tiers", which
+     * are different facts and get different copy.
      */
     readonly peakTiered: boolean
   }
-  /**
-   * Comparison anchor for the top card: the selected plan applied to every
-   * attempt it matches, or undefined when no comparison is meaningful.
-   */
-  readonly anchor?: { readonly planId: string; readonly total: Decimal }
 }
 
 /** The number of minutes after UTC midnight for an epoch-ms timestamp. */
@@ -98,11 +89,6 @@ function utcMinutes(epochMs: number): number {
 /** ISO weekday, 1 = Monday … 7 = Sunday. */
 function utcWeekday(epochMs: number): number {
   return ((new Date(epochMs).getUTCDay() + 6) % 7) + 1
-}
-
-/** The UTC calendar date `YYYY-MM-DD` of an epoch-ms timestamp. */
-function utcDate(epochMs: number): string {
-  return new Date(epochMs).toISOString().slice(0, 10)
 }
 
 /** Minutes after UTC midnight for an `HH:MM` clock string. */
@@ -126,63 +112,6 @@ function bandFor(plan: PricingPlan, epochMs: number): RateBand {
     return plan.ratesPerMillion.peak
   }
   return plan.ratesPerMillion.offPeak
-}
-
-/** Whether a plan is in force on a UTC date under its optional window. */
-function inWindow(plan: PricingPlan, date: string): boolean {
-  if (plan.effectiveFrom !== undefined && plan.effectiveFrom > date) return false
-  return plan.effectiveTo === undefined || plan.effectiveTo > date
-}
-
-/**
- * Order two in-force candidates for one date: the later declared start wins,
- * then the later observation (`provenance.fetchedAt`) — so a refreshed official
- * plan supersedes the snapshot it was fetched after even though neither
- * declares a start — then array order.
- */
-function preferred(left: PricingPlan, right: PricingPlan): PricingPlan {
-  if (left.effectiveFrom !== right.effectiveFrom) {
-    return (left.effectiveFrom ?? '') > (right.effectiveFrom ?? '') ? left : right
-  }
-  const leftFetched = left.provenance?.fetchedAt ?? ''
-  const rightFetched = right.provenance?.fetchedAt ?? ''
-  return leftFetched >= rightFetched ? left : right
-}
-
-/** Whether any plan in the catalog names this provider/model, ignoring windows. */
-export function namesModel(plans: readonly PricingPlan[], provider: string, model: string): boolean {
-  return plans.some(plan => plan.provider === provider && plan.modelIds.includes(model))
-}
-
-/**
- * The plan effective for one provider/model route at a timestamp: the
- * preferred candidate among those in force for the attempt's UTC date.
- * @param plans - the catalog.
- * @param provider - attempt provider.
- * @param model - attempt model (already alias-resolved).
- * @param epochMs - attempt start time.
- * @returns the matching plan, or undefined.
- */
-export function planFor(
-  plans: readonly PricingPlan[],
-  provider: string,
-  model: string,
-  epochMs: number,
-): PricingPlan | undefined {
-  const date = utcDate(epochMs)
-  let best: PricingPlan | undefined
-  for (const plan of plans) {
-    if (plan.provider !== provider || !plan.modelIds.includes(model)) continue
-    if (!inWindow(plan, date)) continue
-    best = best === undefined ? plan : preferred(best, plan)
-  }
-  return best
-}
-
-/** Every attempt this view actually priced, in turn order. */
-function attemptsOf(turns: readonly PricedTurn[]): AttemptUsageRow[] {
-  return turns.flatMap(turn =>
-    turn.attempts.filter(entry => entry.cost !== undefined).map(entry => entry.row))
 }
 
 const ZERO = new Decimal(0)
@@ -212,9 +141,12 @@ function costOf(attempt: AttemptUsageRow, plan: PricingPlan, epochMs: number): A
 }
 
 /**
- * The provider/model facts an *attributed* cost needs. A row missing usage, or
- * whose usage failed validation, or whose cache split cannot be separated, has
- * no priceable tokens at all and stays unpriced under every mode.
+ * The token facts a price needs. An attempt whose usage was never reported,
+ * failed validation, or reported cache-write tokens no plan has a rate for has
+ * no priceable tokens at all, and one whose cache split cannot be separated
+ * cannot use the split rates. Everything else about the attempt — its model,
+ * its provider, whether a route was recorded — describes the request that
+ * produced the tokens, not the rate they are being priced at.
  */
 function tokenBlocker(attempt: AttemptUsageRow): AttemptPricingReason | undefined {
   if (attempt.completeness === 'usage-missing') return 'no-usage'
@@ -225,32 +157,15 @@ function tokenBlocker(attempt: AttemptUsageRow): AttemptPricingReason | undefine
 }
 
 /**
- * Additionally required to attribute a cost to the session's actual spend: the
- * route must be the provider the plans describe, and it must be known.
+ * Price one attempt under the selected plan, or record why it cannot be priced.
+ * @param attempt - the ledger row.
+ * @param plan - the selected plan, or undefined when none is selected.
+ * @returns the priced attempt, or the attempt with its reason.
  */
-function attributionBlocker(attempt: AttemptUsageRow): AttemptPricingReason | undefined {
-  if (attempt.provider !== 'deepseek-official') return 'not-official'
-  const tokens = tokenBlocker(attempt)
-  if (tokens !== undefined) return tokens
-  if (attempt.completeness === 'route-missing') return 'no-route'
-  return undefined
-}
-
-/**
- * Price one attempt under a chosen plan, or record why it cannot be priced.
- * The unresolved case distinguishes "no plan names this model" from "a plan
- * names it but none is in force at that time": the two need different fixes.
- */
-function priceAttempt(
-  attempt: AttemptUsageRow,
-  resolve: (attempt: AttemptUsageRow) => PricingPlan | undefined,
-  unpriceablePlan: (attempt: AttemptUsageRow) => AttemptPricingReason,
-  blockerOf: (attempt: AttemptUsageRow) => AttemptPricingReason | undefined,
-): PricedAttempt {
-  const blocker = blockerOf(attempt)
+function priceAttempt(attempt: AttemptUsageRow, plan: PricingPlan | undefined): PricedAttempt {
+  const blocker = tokenBlocker(attempt)
   if (blocker !== undefined) return { row: attempt, reason: blocker }
-  const plan = resolve(attempt)
-  if (plan === undefined) return { row: attempt, reason: unpriceablePlan(attempt) }
+  if (plan === undefined) return { row: attempt, reason: 'no-plan' }
   return {
     row: attempt,
     planId: plan.id,
@@ -261,56 +176,20 @@ function priceAttempt(
 }
 
 /**
- * Resolve an attempt's model id through the catalog's alias map: a deployment
- * that exposes the same underlying model under its own id is priced by the
- * plan naming the aliased id. An unmapped id is returned unchanged.
- * @param aliases - the catalog's alias map.
- * @param model - the attempt's reported model id.
- * @returns the model id to match plans against.
- */
-export function resolveModelAlias(
-  aliases: Readonly<Record<string, string>> | undefined,
-  model: string,
-): string {
-  return aliases?.[model] ?? model
-}
-
-/**
  * Price a whole ledger under the persisted settings.
  * @param ledger - the projection wire value.
- * @param settings - the persisted catalog and mode.
+ * @param settings - the persisted catalog and selection.
  * @returns the exact per-attempt/per-turn/session result.
  */
 export function priceLedger(ledger: PriceMonitorUsageView, settings: PersistedSettings): PriceView {
   const selectedPlan = settings.plans.find(plan => plan.id === settings.selectedPlanId)
-  const aliases = settings.aliases
-  const modelOf = (attempt: AttemptUsageRow): string =>
-    resolveModelAlias(aliases, attempt.model ?? '')
-  const reprice = settings.mode === 'reprice'
-  // Reprice is a counterfactual over the same tokens: "what would these have
-  // cost at the selected plan's rates". The model and provider that produced
-  // them are exactly what the user is substituting away, so neither may gate
-  // the simulation — only the token facts themselves can.
-  const resolve = reprice
-    ? (): PricingPlan | undefined => selectedPlan
-    : (attempt: AttemptUsageRow): PricingPlan | undefined =>
-      planFor(settings.plans, attempt.provider ?? '', modelOf(attempt), attempt.startedAt)
-  const blockerOf = reprice ? tokenBlocker : attributionBlocker
 
   const byReason: Record<AttemptPricingReason, number> = {
     'no-usage': 0,
     invalid: 0,
-    'no-route': 0,
-    'not-official': 0,
     'no-plan': 0,
-    'inactive-plan': 0,
     'no-split': 0,
     'cache-write': 0,
-  }
-  const unpriceablePlan = (attempt: AttemptUsageRow): AttemptPricingReason => {
-    // Reprice has no plan at all when nothing is selected.
-    if (reprice) return 'no-plan'
-    return namesModel(settings.plans, attempt.provider ?? '', modelOf(attempt)) ? 'inactive-plan' : 'no-plan'
   }
   let priced = 0
   let uncovered = 0
@@ -318,7 +197,7 @@ export function priceLedger(ledger: PriceMonitorUsageView, settings: PersistedSe
 
   for (const row of ledger.turns) {
     const attempts = row.attempts.map(attempt => {
-      const result = priceAttempt(attempt, resolve, unpriceablePlan, blockerOf)
+      const result = priceAttempt(attempt, selectedPlan)
       if (result.cost === undefined) {
         uncovered += 1
         byReason[result.reason!] += 1
@@ -349,8 +228,7 @@ export function priceLedger(ledger: PriceMonitorUsageView, settings: PersistedSe
     })
   }
 
-  const peakTiered = settings.plans.some(plan =>
-    plan.schedule !== null && turns.some(turn => turn.attempts.some(entry => entry.planId === plan.id)))
+  const peakTiered = selectedPlan !== undefined && selectedPlan.schedule !== null && priced > 0
   const cost = sumCost(turns.map(turn => turn.cost))
   const uncachedInput = turns.reduce((sum, turn) => sum + turn.tokens.uncachedInput, 0)
   const cacheRead = turns.reduce((sum, turn) => sum + turn.tokens.cacheRead, 0)
@@ -362,22 +240,7 @@ export function priceLedger(ledger: PriceMonitorUsageView, settings: PersistedSe
     total: uncachedInput + cacheRead + output,
   }
 
-  // Comparison anchor: the attempts this view priced, re-priced at the
-  // selected plan's rates — a rate comparison over the same tokens, so the
-  // delta never mixes in a coverage difference.
-  let anchor: PriceView['anchor']
-  if (selectedPlan !== undefined && !reprice) {
-    const pricedRows = attemptsOf(turns)
-    if (pricedRows.length > 0) {
-      anchor = {
-        planId: selectedPlan.id,
-        total: sumCost(pricedRows.map(attempt => costOf(attempt, selectedPlan, attempt.startedAt))).total,
-      }
-    }
-  }
-
   return {
-    mode: settings.mode,
     selectedPlanId: selectedPlan?.id,
     turns,
     cost,
@@ -389,11 +252,5 @@ export function priceLedger(ledger: PriceMonitorUsageView, settings: PersistedSe
       peak: turns.reduce((sum, turn) => sum + turn.peak, 0),
       peakTiered,
     },
-    ...anchor === undefined ? {} : { anchor },
   }
-}
-
-/** Human `$` formatting with an adaptive 4–8 decimal places for the top card. */
-export function formatUsd(value: Decimal, decimals: number): string {
-  return `$${value.toFixed(decimals)}`
 }

@@ -1,8 +1,8 @@
 /**
  * The plan settings panel shown in the sidebar's settings popup
  * (`settings.render`). It edits the same catalog the tab reads: selection,
- * calculation mode, manual plan create/duplicate/edit/delete, and the
- * restore-built-ins action for an unreadable stored blob.
+ * manual plan create/duplicate/edit/delete, and the restore-built-ins action
+ * for an unreadable stored blob.
  *
  * Official plans are read-only; the panel duplicates one into a manual plan
  * before any rate edit, and it refuses to delete the last remaining plan.
@@ -89,8 +89,8 @@ function planFromDraft(draft: Draft, fallbackId: string): PricingPlan | undefine
     provider: 'deepseek-official',
     modelIds,
     currency: 'USD',
-    // An empty start means "no known start" (the plan applies back to the
-    // beginning); a declared end then makes no sense, so it is dropped too.
+    // The rate period is a label for the plan card, so an empty start (unknown
+    // start) leaves a declared end meaningless: it is dropped too.
     ...draft.effectiveFrom.trim() === '' ? {} : { effectiveFrom: draft.effectiveFrom.trim() },
     ...draft.effectiveFrom.trim() === '' || draft.effectiveTo.trim() === ''
       ? {}
@@ -190,22 +190,7 @@ export function PricePlanSettings(props: SidebarSettingsRenderProps): React.Reac
         >
           {catalog.plans.map(plan => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
         </select>
-      </div>
-
-      <div className="dpm-field">
-        <label className="dpm-field__label" htmlFor="dpm-mode">{translate('settings.mode')}</label>
-        <select
-          id="dpm-mode"
-          className="dpm-input"
-          value={catalog.mode}
-          onChange={(event) => {
-            const mode = event.target.value === 'reprice' ? 'reprice' : 'effective'
-            edit(current => ({ ...current, mode }))
-          }}
-        >
-          <option value="effective">{translate('mode.effective')}</option>
-          <option value="reprice">{translate('mode.reprice')}</option>
-        </select>
+        <p className="dpm-note">{translate('settings.basis')}</p>
       </div>
 
       <div className="dpm-field__label">{translate('settings.plans')}</div>
@@ -261,97 +246,6 @@ export function PricePlanSettings(props: SidebarSettingsRenderProps): React.Reac
       {error !== null && <p className="dpm-note dpm-note--error">{error}</p>}
       <p className="dpm-note">{translate('settings.hint')}</p>
       <p className="dpm-note">{translate('settings.usdNote')}</p>
-
-      <AliasEditor catalog={catalog} edit={edit} />
-    </div>
-  )
-}
-
-/**
- * The model-alias editor: rows of `reported id → plan model id`. Aliases are
- * catalog data (not plan data), so they never touch the read-only official
- * plans, and a target no plan names simply leaves the attempt unpriced.
- */
-function AliasEditor({ catalog, edit }: {
-  catalog: PersistedSettings
-  edit: (update: (current: PersistedSettings) => PersistedSettings) => void
-}): React.ReactElement {
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
-  const aliases = Object.entries(catalog.aliases ?? {}).sort(([left], [right]) => left.localeCompare(right))
-  const targets = [...new Set(catalog.plans.flatMap(plan => plan.modelIds))].sort()
-  const canAdd = from.trim() !== '' && to.trim() !== '' && catalog.aliases?.[from.trim()] === undefined
-
-  const setAlias = (next: Record<string, string>): void => {
-    edit(current => {
-      const { aliases: _dropped, ...rest } = current
-      return Object.keys(next).length === 0 ? rest : { ...rest, aliases: next }
-    })
-  }
-
-  return (
-    <div className="dpm-field">
-      <div className="dpm-field__label">{translate('settings.aliases')}</div>
-      {aliases.map(([source, target]) => (
-        <div className="dpm-plan-row" key={source}>
-          <span className="dpm-plan-row__name dpm-num">{`${source} → ${target}`}</span>
-          <span className="dpm-plan-row__actions">
-            <button
-              type="button"
-              className="dpm-mini"
-              onClick={() => {
-                const next = { ...catalog.aliases }
-                delete next[source]
-                setAlias(next)
-              }}
-            >
-              {translate('action.delete')}
-            </button>
-          </span>
-        </div>
-      ))}
-      <div className="dpm-grid2">
-        <div className="dpm-field">
-          <label className="dpm-field__label" htmlFor="dpm-alias-from">{translate('settings.aliasFrom')}</label>
-          <input
-            id="dpm-alias-from"
-            className="dpm-input"
-            value={from}
-            onChange={(event) => setFrom(event.target.value)}
-            placeholder="deepseek-v4.1-flash-expires-on-0910"
-          />
-        </div>
-        <div className="dpm-field">
-          <label className="dpm-field__label" htmlFor="dpm-alias-to">{translate('settings.aliasTo')}</label>
-          <input
-            id="dpm-alias-to"
-            className="dpm-input"
-            list="dpm-alias-targets"
-            value={to}
-            onChange={(event) => setTo(event.target.value)}
-            placeholder="deepseek-v4-flash-vision-exp"
-          />
-          <datalist id="dpm-alias-targets">
-            {targets.map(model => <option key={model} value={model} />)}
-          </datalist>
-        </div>
-      </div>
-      <div className="dpm-buttons">
-        <button
-          type="button"
-          className="dpm-button"
-          disabled={!canAdd}
-          onClick={() => {
-            setAlias({ ...catalog.aliases, [from.trim()]: to.trim() })
-            setFrom('')
-            setTo('')
-          }}
-        >
-          {translate('settings.aliasAdd')}
-        </button>
-      </div>
-      <p className="dpm-note">{translate('settings.aliasesHint')}</p>
-      <p className="dpm-note">{translate('settings.aliasTargets')}: {targets.join(', ')}</p>
     </div>
   )
 }
@@ -384,8 +278,8 @@ function DraftEditor({ draft, t, onChange, onCancel, onSave }: {
       {field('models', 'settings.models')}
       <div className="dpm-grid2">
         {field('effectiveFrom', 'settings.effectiveFrom')}
-        {/* An empty start means the plan applies back to the beginning, so a
-            declared end would contradict it and is not offered. */}
+        {/* The period describes the rates rather than gating them, so an
+            unknown start leaves a declared end with nothing to bracket. */}
         {unknownStart ? <div className="dpm-field" /> : field('effectiveTo', 'settings.effectiveTo')}
       </div>
       {unknownStart && <p className="dpm-note">{t('settings.unknownStart')}</p>}

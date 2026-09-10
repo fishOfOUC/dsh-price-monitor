@@ -1,8 +1,9 @@
 /**
  * Client-half tests: activation (dictionary + tab registration, feature gate),
- * catalog reads from the sidebar prefs, and one rendered tab asserting that
- * the hero total equals the sum of the per-turn rows and that unpriceable
- * attempts surface as partial instead of zero.
+ * catalog reads from the sidebar prefs, and rendered tabs asserting that the
+ * hero total equals the sum of the per-turn rows, that switching the selected
+ * plan reprices every amount, and that an unpriceable attempt surfaces as
+ * partial instead of zero.
  */
 
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -74,15 +75,16 @@ const LEDGER: PriceMonitorUsageView = {
           completeness: 'complete',
         },
         {
-          // A gateway attempt the official plans cannot price.
+          // An attempt whose usage never arrived: no tokens to price at all,
+          // so the total is partial whatever plan is selected.
           id: '2:1:0',
           turn: 2,
           step: 1,
           attempt: 0,
           startedAt: Date.UTC(2026, 8, 14, 20, 2),
-          provider: 'other-gateway',
-          model: 'mystery',
-          completeness: 'complete',
+          provider: 'deepseek-official',
+          model: 'deepseek-v4-flash',
+          completeness: 'usage-missing',
         },
       ],
     },
@@ -144,6 +146,11 @@ function heroTotal(markup: string): number {
 /** Turn-row totals in render order, from their cost spans. */
 function turnTotals(markup: string): number[] {
   return [...markup.matchAll(/dpm-turn__cost dpm-num(?:[^>]*)>\$(\d+\.\d+)/g)].map(match => Number(match[1]))
+}
+
+/** The first rate in the plan card's rate table (its cache-miss cell). */
+function rateTableOf(markup: string): string | undefined {
+  return /dpm-table[\s\S]*?dpm-num">(\$\d+\.\d+)/.exec(markup)?.[1]
 }
 
 describe('client activation', () => {
@@ -208,6 +215,19 @@ describe('catalog reads', () => {
     expect(catalogFromPrefs({ pluginSettings: {} } as unknown as SidebarPrefs)).toBeUndefined()
     expect(catalogFromPrefs({ pluginSettings: { [SETTINGS_KEY]: { [CATALOG_KEY]: { schemaVersion: 9 } } } } as unknown as SidebarPrefs)).toBeUndefined()
   })
+
+  it('upgrades a stored v1 catalog instead of reporting it corrupt', () => {
+    const plans = [...officialSeedPlans]
+    const stored = {
+      schemaVersion: 1,
+      selectedPlanId: plans[1]!.id,
+      mode: 'reprice',
+      plans,
+      aliases: { 'deepseek-v4.1-flash-expires-on-0910': 'deepseek-v4-flash-vision-exp' },
+    }
+    const catalog = catalogFromPrefs({ pluginSettings: { [SETTINGS_KEY]: { [CATALOG_KEY]: stored } } } as unknown as SidebarPrefs)
+    expect(catalog).toEqual({ schemaVersion: 2, selectedPlanId: plans[1]!.id, plans })
+  })
 })
 
 describe('rendered tab', () => {
@@ -228,10 +248,32 @@ describe('rendered tab', () => {
     const markup = renderToStaticMarkup(<PriceMonitorTab {...tabProps(store, LEDGER)} />)
     // The hero switches to the "known cost" wording and names the reason.
     expect(markup).toContain(en['total.known'])
-    expect(markup).toContain(`${en['reason.not-official']} ×1`)
+    expect(markup).toContain(`${en['reason.no-usage']} ×1`)
     // Both tiers appear across the two turns.
     expect(markup).toContain(en['turns.peak'])
     expect(markup).toContain(en['turns.offPeak'])
+  })
+
+  it('reprices the hero, the breakdown, and every turn row when the plan changes', () => {
+    const plans = defaultSettings()
+    const [flash, pro] = officialSeedPlans
+    const atFlash = renderToStaticMarkup(
+      <PriceMonitorTab {...tabProps(storeWith({ ...plans, selectedPlanId: flash!.id }).store, LEDGER)} />)
+    const atPro = renderToStaticMarkup(
+      <PriceMonitorTab {...tabProps(storeWith({ ...plans, selectedPlanId: pro!.id }).store, LEDGER)} />)
+
+    // Turn 1 runs in a peak window (1M miss / 2M cache-read / 0.5M output) and
+    // turn 2 off-peak (0.1M miss / 10k output), so flash is
+    // 0.3 + 2×0.006 + 0.5×1.2 + 0.1×0.15 + 0.01×0.6 = 0.933 and the pro plan
+    // is 1.32 + 2×0.044 + 0.5×3.96 + 0.1×0.66 + 0.01×1.98 = 3.4738.
+    expect(heroTotal(atFlash)).toBeCloseTo(0.933, 8)
+    expect(heroTotal(atPro)).toBeCloseTo(3.4738, 8)
+    // The breakdown, the rate table, and the turn rows move with it, not just
+    // the hero.
+    expect(amountsIn(atPro)).not.toEqual(amountsIn(atFlash))
+    expect(turnTotals(atPro)).not.toEqual(turnTotals(atFlash))
+    expect(rateTableOf(atFlash)).toBe('$0.15')
+    expect(rateTableOf(atPro)).toBe('$0.66')
   })
 
   it('falls back to the bundled official snapshot and reports a corrupt blob', () => {
@@ -278,9 +320,9 @@ describe('rendered tab', () => {
   })
 
   it('makes no peak-tier claim when nothing was priced', () => {
-    // The plan does have tiers; the session simply has no priced attempt, so
+    // The plan does have tiers; the session simply has no priceable attempt, so
     // neither tier sentence is a fact this view established.
-    const unmapped: PriceMonitorUsageView = {
+    const unpriceable: PriceMonitorUsageView = {
       turns: [{
         turn: 1,
         startedAt: Date.UTC(2026, 8, 14, 12, 0),
@@ -293,28 +335,27 @@ describe('rendered tab', () => {
           attempt: 0,
           startedAt: Date.UTC(2026, 8, 14, 12, 0),
           provider: 'deepseek-official',
-          model: 'no-plan-names-this',
+          model: 'deepseek-v4-flash',
           uncachedInputTokens: 1_000,
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
           outputTokens: 1,
-          completeness: 'complete',
+          completeness: 'invalid',
         }],
       }],
     }
     const { store } = storeWith(defaultSettings())
-    const markup = renderToStaticMarkup(<PriceMonitorTab {...tabProps(store, unmapped)} />)
+    const markup = renderToStaticMarkup(<PriceMonitorTab {...tabProps(store, unpriceable)} />)
     expect(markup).not.toContain(en['breakdown.flatNote'])
     expect(markup).not.toContain(en['breakdown.noPeakRequests'])
     // The tokens are still reported as facts.
     expect(markup).toContain('1.0k')
   })
 
-  it('renders every plan chip and the mode toggle', () => {
+  it('renders every plan chip and the same-tokens comparison', () => {
     const { store } = storeWith(defaultSettings())
     const markup = renderToStaticMarkup(<PriceMonitorTab {...tabProps(store, LEDGER)} />)
     for (const plan of officialSeedPlans) expect(markup).toContain(plan.name)
-    expect(markup).toContain(en['mode.effective'])
     expect(markup).toContain(en['plan.compare'])
   })
 })

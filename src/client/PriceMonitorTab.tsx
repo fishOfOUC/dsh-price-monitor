@@ -4,11 +4,11 @@
  *
  * Every amount comes from the single `usePriceView` computation — the hero,
  * the three summary rows, the comparison rows, and every turn row read that
- * one object, so per-turn amounts always add up to the hero exactly. Peak
- * tier labels and plan names are read off the same result (the engine records
- * the band and plan it actually priced with), never recomputed here, and an
- * attempt that cannot be priced stays visible with its reason instead of
- * becoming zero.
+ * one object, so per-turn amounts always add up to the hero exactly, and
+ * switching the selected plan reprices all of them together. Peak tier labels
+ * and plan names are read off the same result (the engine records the band and
+ * plan it actually priced with), never recomputed here, and an attempt that
+ * cannot be priced stays visible with its reason instead of becoming zero.
  *
  * @module dsh-price-monitor/client/PriceMonitorTab
  */
@@ -23,6 +23,7 @@ import type {
   PriceView,
 } from '../pricing/index.ts'
 import { priceLedger } from '../pricing/index.ts'
+import type { PriceMonitorUsageView } from '../projection-types.ts'
 import { clientContextOf } from '../context-types.ts'
 import { t, type PriceMonitorKey, type Translate } from './locales.ts'
 import { useCatalog, usePriceView, useSidebarPrefs, useUsageLedger } from './usePriceMonitor.ts'
@@ -89,10 +90,6 @@ export function PriceMonitorTab({ ctx: sidebarCtx, store, scope, visible }: TabC
   const [writeError, setWriteError] = useState<string | null>(null)
 
   const selectedPlan = catalog.plans.find(plan => plan.id === catalog.selectedPlanId)
-  // The anchor names the plan whose rates the counterfactual uses.
-  const anchorPlanName = view.anchor === undefined
-    ? undefined
-    : catalog.plans.find(plan => plan.id === view.anchor!.planId)?.name
   const turns = useMemo(() => [...view.turns].reverse(), [view.turns])
   const attemptCount = view.coverage.priced + view.coverage.uncovered
 
@@ -108,9 +105,7 @@ export function PriceMonitorTab({ ctx: sidebarCtx, store, scope, visible }: TabC
       <header className="dpm-head">
         <div className="dpm-head__text">
           <div className="dpm-head__title">{t('tab.title')}</div>
-          <div className="dpm-head__sub">
-            {`${selectedPlan?.name ?? t('empty.noPlan')} · ${t(`mode.${catalog.mode}` as PriceMonitorKey)}`}
-          </div>
+          <div className="dpm-head__sub">{selectedPlan?.name ?? t('empty.noPlan')}</div>
         </div>
         <button
           type="button"
@@ -136,15 +131,11 @@ export function PriceMonitorTab({ ctx: sidebarCtx, store, scope, visible }: TabC
         )
         : (
           <>
-            <HeroSection
-              view={view} t={t} attemptCount={attemptCount} turnCount={view.turns.length}
-              anchorPlanName={anchorPlanName}
-            />
+            <HeroSection view={view} t={t} attemptCount={attemptCount} turnCount={view.turns.length} />
             <BreakdownSection view={view} t={t} />
             <PlanSection
-              view={view} t={t} catalog={catalog}
+              view={view} t={t} catalog={catalog} ledger={ledger}
               onSelect={planId => write(current => ({ ...current, selectedPlanId: planId }))}
-              onMode={mode => write(current => ({ ...current, mode }))}
             />
             <TurnsSection
               turns={turns} t={t} openTurn={openTurn}
@@ -159,33 +150,22 @@ export function PriceMonitorTab({ ctx: sidebarCtx, store, scope, visible }: TabC
 }
 
 /** The hero card: total, coverage note, and the run statistics. */
-function HeroSection({ view, t, attemptCount, turnCount, anchorPlanName }: {
+function HeroSection({ view, t, attemptCount, turnCount }: {
   view: PriceView
   t: Translate
   attemptCount: number
   turnCount: number
-  anchorPlanName: string | undefined
 }): React.ReactElement {
   const partial = view.coverage.uncovered > 0
   const average = turnCount === 0 ? new Decimal(0) : view.cost.total.div(turnCount)
   const promptTokens = view.tokens.uncachedInput + view.tokens.cacheRead
   const hitRate = promptTokens === 0 ? undefined : view.tokens.cacheRead / promptTokens
-  const delta = view.anchor === undefined ? undefined : formatDelta(view.cost.total, view.anchor.total)
   return (
     <section className="dpm-section">
       <div className="dpm-hero">
         <span className="dpm-num dpm-hero__value">{formatCost(view.cost.total)}</span>
         <span className="dpm-hero__aside">
           <div>{partial ? t('total.known') : t('total.label')}</div>
-          {view.anchor !== undefined && delta !== undefined && (
-            <div>
-              <b>{delta}</b>
-              {` ${t('total.anchor', {
-                plan: anchorPlanName ?? '—',
-                amount: formatCost(view.anchor.total),
-              })}`}
-            </div>
-          )}
         </span>
       </div>
       <div className="dpm-stats">
@@ -273,28 +253,24 @@ function BreakdownSection({ view, t }: { view: PriceView; t: Translate }): React
   )
 }
 
-/** The selected plan card, plan chips, mode switch, and the comparison list. */
-function PlanSection({ view, t, catalog, onSelect, onMode }: {
+/** The selected plan card, plan chips, rate-period line, and the comparison list. */
+function PlanSection({ view, t, catalog, ledger, onSelect }: {
   view: PriceView
   t: Translate
   catalog: PersistedSettings
+  ledger: PriceMonitorUsageView
   onSelect: (planId: string) => void
-  onMode: (mode: PersistedSettings['mode']) => void
 }): React.ReactElement {
   const selected = catalog.plans.find(plan => plan.id === catalog.selectedPlanId)
-  // Same tokens, each plan's own rates: a simulated comparison, labelled as such.
-  // The alias map rides along, so a deployment model id reprices under the plan
-  // that owns its aliased id.
+  // Same tokens, each plan's own rates. Every row is a full reprice of the
+  // ledger, exactly like the hero, so picking one changes the amounts above.
   const comparisons = useMemo(() => catalog.plans
     .map(plan => ({
       plan,
-      total: priceLedger(viewSource(view), {
-        ...catalog,
-        selectedPlanId: plan.id,
-        mode: 'reprice',
-      }).cost.total,
+      total: priceLedger(ledger, { ...catalog, selectedPlanId: plan.id }).cost.total,
     }))
-    .sort((left, right) => right.total.comparedTo(left.total)), [catalog, view])
+    .sort((left, right) => right.total.comparedTo(left.total)), [catalog, ledger])
+  const base = comparisons.find(entry => entry.plan.id === catalog.selectedPlanId)?.total ?? view.cost.total
   return (
     <section className="dpm-section">
       <div className="dpm-section__head">
@@ -359,22 +335,13 @@ function PlanSection({ view, t, catalog, onSelect, onMode }: {
             {plan.name}
           </button>
         ))}
-        <button
-          type="button"
-          className={`dpm-chip${catalog.mode === 'reprice' ? ' dpm-chip--on' : ''}`}
-          aria-pressed={catalog.mode === 'reprice'}
-          title={catalog.mode === 'reprice' ? t('mode.repriceHint') : t('mode.effectiveHint')}
-          onClick={() => onMode(catalog.mode === 'reprice' ? 'effective' : 'reprice')}
-        >
-          {t(`mode.${catalog.mode}` as PriceMonitorKey)}
-        </button>
       </div>
 
       {comparisons.length > 1 && (
         <div className="dpm-compare">
           <div className="dpm-compare__title">{t('plan.compare')}</div>
           {comparisons.map(({ plan, total }) => {
-            const delta = formatDelta(total, view.cost.total)
+            const delta = formatDelta(total, base)
             const current = plan.id === catalog.selectedPlanId
             return (
               <div className="dpm-compare__row" key={plan.id}>
@@ -382,7 +349,7 @@ function PlanSection({ view, t, catalog, onSelect, onMode }: {
                 <span className="dpm-num">
                   {formatCost(total)}
                   {!current && delta !== undefined && (
-                    <span className={total.gt(view.cost.total) ? 'dpm-up' : 'dpm-down'}>{` ${delta}`}</span>
+                    <span className={total.gt(base) ? 'dpm-up' : 'dpm-down'}>{` ${delta}`}</span>
                   )}
                 </span>
               </div>
@@ -392,11 +359,6 @@ function PlanSection({ view, t, catalog, onSelect, onMode }: {
       )}
     </section>
   )
-}
-
-/** The ledger behind a priced view (the comparison reprices exactly the priced turns). */
-function viewSource(view: PriceView): { turns: PriceView['turns'][number]['row'][] } {
-  return { turns: view.turns.map(turn => turn.row) }
 }
 
 /**
@@ -414,7 +376,7 @@ function tierNote(view: PriceView, t: Translate): string | undefined {
 }
 
 /**
- * The plan card's effectivity line. A plan that declares no start says so and
+ * The plan card's rate-period line. A plan that declares no start says so and
  * names when its rates were observed, instead of implying a start date it
  * never had.
  */

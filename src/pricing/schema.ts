@@ -69,11 +69,11 @@ export const pricingPlanSchema = z.object({
   modelIds: z.array(z.string().min(1)).min(1),
   currency: z.literal('USD'),
   /**
-   * First UTC date the plan is in force. Absent means "no known start": the
-   * plan applies back to the beginning of the log and is superseded by any
-   * later-fetched plan naming the same model. An official snapshot omits it —
-   * a fetch observes today's rates, it does not learn when they began — while
-   * a hand-entered historical plan states its window.
+   * First UTC date this plan's rates applied, for the plan card's description.
+   * Absent means the start is unknown — an official snapshot observes today's
+   * rates, it never learns when they began. The period is a label only: the
+   * selected plan prices every attempt whatever date it ran, so no amount
+   * depends on this window.
    */
   effectiveFrom: isoDate.optional(),
   effectiveTo: isoDate.optional(),
@@ -107,38 +107,40 @@ export type PricingPlan = z.infer<typeof pricingPlanSchema>
 export type RateBand = z.infer<typeof rateBandSchema>
 export type PeakSchedule = z.infer<typeof peakScheduleSchema>
 
-/** Pricing mode: historical per-attempt plan, or reprice everything at one plan. */
-export type PricingMode = 'effective' | 'reprice'
-
 /**
  * The single persisted settings blob under `pluginSettings['price-monitor'].catalog`.
  *
- * `aliases` maps a deployment's own model id onto one named by a plan, so a
- * harness that exposes the same underlying model under a different id can be
- * priced without touching the read-only official plans or guessing an id into
- * the shipped snapshot. A target that no plan names simply stays unpriced.
+ * The selected plan is the whole pricing basis: it prices every attempt of the
+ * session, so switching plans changes every amount the tab shows.
+ *
+ * Unknown keys are stripped, not rejected: every write goes through the
+ * settings service as a patch whose plain objects merge recursively and whose
+ * arrays replace wholesale, so a key this schema no longer declares stays in
+ * the stored document forever. A version 1 blob is therefore nothing more than
+ * a version 2 blob with two retired keys, and both read here.
  */
 export const persistedSettingsSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   selectedPlanId: z.string().min(1),
-  mode: z.enum(['effective', 'reprice']),
   plans: z.array(pricingPlanSchema).min(1),
-  aliases: z.record(z.string().min(1), z.string().min(1)).optional(),
   lastOfficialRefresh: z.string().optional(),
-}).strict()
+})
 
-export type PersistedSettings = z.infer<typeof persistedSettingsSchema>
+export type PersistedSettings = Omit<z.infer<typeof persistedSettingsSchema>, 'schemaVersion'> & {
+  /** The generation this build writes; a version 1 blob reads as version 2. */
+  readonly schemaVersion: 2
+}
 
 /**
- * Parse a stored settings blob; failures (corruption, unknown fields, an
- * older schema) yield undefined so the caller can offer a reset instead of
- * silently dropping the user's manual plans.
+ * Parse a stored settings blob; failures (an unreadable structure, a schema
+ * generation this build does not know) yield undefined so the caller can offer
+ * a reset instead of silently dropping the user's manual plans.
  * @param value - the persisted blob.
- * @returns the validated settings, or undefined when unreadable.
+ * @returns the validated settings, normalized to the current schema version.
  */
 export function parsePersistedSettings(value: unknown): PersistedSettings | undefined {
-  const result = persistedSettingsSchema.safeParse(value)
-  return result.success ? result.data : undefined
+  const parsed = persistedSettingsSchema.safeParse(value)
+  return parsed.success ? { ...parsed.data, schemaVersion: 2 } : undefined
 }
 
 /**

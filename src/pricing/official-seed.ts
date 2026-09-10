@@ -95,12 +95,11 @@ function seedPlan(entry: ModelRates): PricingPlan {
 /** The shipped official plan catalog (one plan per model). */
 export const officialSeedPlans: readonly PricingPlan[] = MODELS.map(seedPlan)
 
-/** Default settings: the official snapshot, effective mode, first plan selected. */
+/** Default settings: the official snapshot with its first plan selected. */
 export function defaultSettings(): PersistedSettings {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     selectedPlanId: officialSeedPlans[0]!.id,
-    mode: 'effective',
     plans: [...officialSeedPlans],
   }
 }

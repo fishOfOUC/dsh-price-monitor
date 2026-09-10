@@ -1,12 +1,12 @@
 /**
- * Pricing-engine tests: exact decimal math, peak boundaries, effective-window
- * selection, the two modes, and partial-propagation semantics.
+ * Pricing-engine tests: exact decimal math, peak boundaries, the selected plan
+ * as the sole pricing basis, and partial-propagation semantics.
  */
 
 import { Decimal } from 'decimal.js'
 import { describe, expect, it } from 'vitest'
 import type { AttemptUsageRow, PriceMonitorUsageView, TurnUsageRow } from '../src/projection-types.ts'
-import { isPeak, planFor, priceLedger, resolveModelAlias } from '../src/pricing/engine.ts'
+import { isPeak, priceLedger } from '../src/pricing/engine.ts'
 import { parsePersistedSettings, pricingPlanSchema, type PeakSchedule, type PersistedSettings, type PricingPlan } from '../src/pricing/schema.ts'
 import { defaultSettings, expandOfficialModelIds, officialSeedPlans } from '../src/pricing/official-seed.ts'
 
@@ -28,6 +28,17 @@ const flashPlan = (over: Partial<PricingPlan> = {}): PricingPlan => ({
   ratesPerMillion: {
     offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' },
     peak: { cacheMiss: '0.44', cacheHit: '0.014', output: '1.32' },
+  },
+  ...over,
+})
+
+const proPlan = (over: Partial<PricingPlan> = {}): PricingPlan => flashPlan({
+  id: 'p-pro',
+  name: 'pro',
+  modelIds: ['deepseek-v4-pro'],
+  ratesPerMillion: {
+    offPeak: { cacheMiss: '0.66', cacheHit: '0.022', output: '1.98' },
+    peak: { cacheMiss: '1.32', cacheHit: '0.044', output: '3.96' },
   },
   ...over,
 })
@@ -56,17 +67,12 @@ function ledgerOf(rows: AttemptUsageRow[]): PriceMonitorUsageView {
   return { turns: [turn] }
 }
 
-function settingsOf(
-  plans: PricingPlan[],
-  mode: 'effective' | 'reprice' = 'effective',
-  aliases?: Record<string, string>,
-): PersistedSettings {
+/** Settings selecting the first plan unless told otherwise. */
+function settingsOf(plans: PricingPlan[], selectedPlanId?: string): PersistedSettings {
   return {
-    schemaVersion: 1,
-    selectedPlanId: plans[0]!.id,
-    mode,
+    schemaVersion: 2,
+    selectedPlanId: selectedPlanId ?? plans[0]!.id,
     plans,
-    ...aliases === undefined ? {} : { aliases },
   }
 }
 
@@ -95,57 +101,67 @@ describe('peak classification', () => {
   }
 })
 
-describe('plan resolution', () => {
-  it('selects the plan whose effective window contains the UTC date (left-closed, right-open)', () => {
+describe('the selected plan is the pricing basis', () => {
+  it('prices every attempt with usable tokens, whatever model or provider produced them', () => {
+    const rows = [
+      attempt({ id: '1:0:0', uncachedInputTokens: 1_000_000 }),
+      // A different model, an unknown id, a route never recorded, and a
+      // third-party gateway: the point of switching plans is "what would these
+      // tokens have cost at these rates", so none of them may gate it.
+      attempt({ id: '1:1:0', model: 'deepseek-v4-pro', uncachedInputTokens: 1_000_000 }),
+      attempt({ id: '1:2:0', model: 'renamed-flash', uncachedInputTokens: 1_000_000 }),
+      attempt({ id: '1:3:0', model: undefined, completeness: 'route-missing', uncachedInputTokens: 1_000_000 }),
+      attempt({ id: '1:4:0', model: 'mystery', provider: 'other-gateway', uncachedInputTokens: 1_000_000 }),
+    ]
+    const result = priceLedger(ledgerOf(rows), settingsOf([flashPlan()]))
+    expect(result.coverage.priced).toBe(5)
+    expect(result.coverage.uncovered).toBe(0)
+    for (const entry of result.turns[0]!.attempts) {
+      expect(entry.planId).toBe('p-flash')
+      expect(entry.cost?.total.toFixed()).toBe('0.22')
+    }
+    expect(result.cost.total.toFixed()).toBe('1.1')
+  })
+
+  it('reprices every amount when the selected plan changes', () => {
+    const row = attempt({
+      startedAt: utc(2026, 9, 14, 1, 30), // Monday peak window
+      uncachedInputTokens: 1_000_000,
+      cacheReadTokens: 2_000_000,
+      outputTokens: 500_000,
+    })
+    const plans = [flashPlan(), proPlan()]
+
+    const atFlash = priceLedger(ledgerOf([row]), settingsOf(plans, 'p-flash'))
+    const atPro = priceLedger(ledgerOf([row]), settingsOf(plans, 'p-pro'))
+
+    // Flash peak: 1.0×0.44·… = 1 × 0.44 + 2 × 0.014 + 0.5 × 1.32
+    expect(atFlash.cost.total.toFixed()).toBe('1.128')
+    expect(atFlash.turns[0]!.cost.total.toFixed()).toBe('1.128')
+    // Pro peak: 1 × 1.32 + 2 × 0.044 + 0.5 × 3.96
+    expect(atPro.cost.total.toFixed()).toBe('3.388')
+    expect(atPro.turns[0]!.cost.total.toFixed()).toBe('3.388')
+    // The tokens are the same facts under either plan.
+    expect(atPro.tokens).toEqual(atFlash.tokens)
+    expect(atPro.turns[0]!.peak).toBe(atFlash.turns[0]!.peak)
+  })
+
+  it('prices a plan’s rate period as a label, never as a gate', () => {
+    // The window says when these rates applied; an attempt outside it is still
+    // priced at them, because the user selected this plan to price the session.
     const plan = flashPlan({ effectiveFrom: '2026-09-10', effectiveTo: '2026-09-12' })
-    expect(planFor([plan], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 9, 23, 59))).toBeUndefined()
-    expect(planFor([plan], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 10, 0, 0))).toBe(plan)
-    expect(planFor([plan], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 11, 23, 59))).toBe(plan)
-    expect(planFor([plan], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 12, 0, 0))).toBeUndefined()
+    const row = attempt({ startedAt: utc(2025, 1, 6, 0, 0), uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
+    const result = priceLedger(ledgerOf([row]), settingsOf([plan]))
+    expect(result.coverage.priced).toBe(1)
+    expect(result.cost.total.toFixed()).toBe('0.22')
   })
 
-  it('prefers the latest effectiveFrom among matching plans', () => {
-    const older = flashPlan({ id: 'older', effectiveFrom: '2026-07-31' })
-    const newer = flashPlan({ id: 'newer', effectiveFrom: '2026-09-10' })
-    expect(planFor([older, newer], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 11, 0, 0))).toBe(newer)
-  })
-})
-
-describe('effective windows', () => {
-  it('treats an absent start as in force back to the beginning of the log', () => {
-    const plan = flashPlan({ effectiveFrom: undefined })
-    // A session that ran long before the plan was observed is still priced:
-    // the snapshot knows today's rates, not when they began.
-    expect(planFor([plan], 'deepseek-official', 'deepseek-v4-flash', utc(2025, 1, 6, 0, 0))).toBe(plan)
-    expect(planFor([plan], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 10, 0, 0))).toBe(plan)
-  })
-
-  it('lets a later observation supersede an earlier startless version', () => {
-    const older = flashPlan({ id: 'older', effectiveFrom: undefined, provenance: { url: 'u', fetchedAt: '2026-08-01T00:00:00.000Z', contentHash: 'a' } })
-    const newer = flashPlan({ id: 'newer', effectiveFrom: undefined, provenance: { url: 'u', fetchedAt: '2026-09-10T00:00:00.000Z', contentHash: 'b' } })
-    expect(planFor([older, newer], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 11, 0, 0))).toBe(newer)
-    // Array order does not decide it.
-    expect(planFor([newer, older], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 11, 0, 0))).toBe(newer)
-  })
-
-  it('still honours an explicit declared start and end', () => {
-    const plan = flashPlan({ effectiveFrom: '2026-09-10', effectiveTo: '2026-09-12' })
-    expect(planFor([plan], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 9, 0, 0))).toBeUndefined()
-    expect(planFor([plan], 'deepseek-official', 'deepseek-v4-flash', utc(2026, 9, 10, 0, 0))).toBe(plan)
-  })
-
-  it('separates "no plan names this model" from "no version is in force then"', () => {
-    const future = flashPlan({ effectiveFrom: '2099-01-01' })
-    const row = attempt({ uncachedInputTokens: 1_000_000 })
-
-    const inactive = priceLedger(ledgerOf([row]), settingsOf([future]))
-    expect(inactive.coverage.byReason['inactive-plan']).toBe(1)
-    expect(inactive.coverage.byReason['no-plan']).toBe(0)
-
-    const unknown = attempt({ model: 'no-such-model', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
-    const unmatched = priceLedger(ledgerOf([unknown]), settingsOf([flashPlan()]))
-    expect(unmatched.coverage.byReason['no-plan']).toBe(1)
-    expect(unmatched.coverage.byReason['inactive-plan']).toBe(0)
+  it('refuses to price anything when no plan is selected', () => {
+    const row = attempt({ uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
+    const result = priceLedger(ledgerOf([row]), settingsOf([flashPlan()], 'no-such-plan'))
+    expect(result.coverage.uncovered).toBe(1)
+    expect(result.coverage.byReason['no-plan']).toBe(1)
+    expect(result.turns[0]!.attempts[0]!.planId).toBeUndefined()
   })
 })
 
@@ -154,10 +170,10 @@ describe('token facts under partial pricing', () => {
     const priced = attempt({ id: '1:0:0', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
     const unpriced = attempt({
       id: '1:1:0',
-      model: 'unmapped-model',
-      uncachedInputTokens: 500_000,
-      cacheReadTokens: 200_000,
-      outputTokens: 100_000,
+      completeness: 'usage-missing',
+      uncachedInputTokens: undefined,
+      cacheReadTokens: undefined,
+      outputTokens: undefined,
     })
     const result = priceLedger(ledgerOf([priced, unpriced]), settingsOf([flashPlan()]))
     // The money covers only the priced attempt...
@@ -165,12 +181,11 @@ describe('token facts under partial pricing', () => {
     expect(result.cost.total.toFixed()).toBe('0.22')
     // ...while the reported tokens are complete facts.
     expect(result.turns[0]!.tokens).toEqual({
-      uncachedInput: 1_500_000,
-      cacheRead: 200_000,
-      output: 100_000,
-      total: 1_800_000,
+      uncachedInput: 1_000_000,
+      cacheRead: 0,
+      output: 0,
+      total: 1_000_000,
     })
-    expect(result.tokens.total).toBe(1_800_000)
   })
 })
 
@@ -192,7 +207,7 @@ describe('pricing math', () => {
 
   it('uses the peak band at peak times and keeps every decimal digit', () => {
     const row = attempt({
-      startedAt: utc(2026, 9, 14, 2, 0), // Monday peak, inside the effective window
+      startedAt: utc(2026, 9, 14, 2, 0), // Monday peak
       uncachedInputTokens: 123_456,
       cacheReadTokens: 0,
       outputTokens: 7,
@@ -201,6 +216,7 @@ describe('pricing math', () => {
     const expected = new Decimal(123_456).mul('0.44').div(1_000_000)
       .plus(new Decimal(7).mul('1.32').div(1_000_000))
     expect(result.cost.total.eq(expected)).toBe(true)
+    expect(result.coverage.peak).toBe(1)
   })
 
   it('matches the reference aggregate and keeps turn totals equal to session totals', () => {
@@ -215,79 +231,41 @@ describe('pricing math', () => {
   })
 })
 
-describe('pricing modes', () => {
-  const historical = flashPlan({ id: 'historical', effectiveFrom: '2026-07-31', effectiveTo: '2026-09-10' })
-  const current = flashPlan({ id: 'current', effectiveFrom: '2026-09-10' })
-
-  it('effective mode prices each attempt by the plan current at its time', () => {
-    const rows = [
-      attempt({ id: '1:0:0', startedAt: utc(2026, 8, 1, 0, 0), uncachedInputTokens: 1_000_000 }),
-      attempt({ id: '1:1:0', startedAt: utc(2026, 9, 11, 0, 0), uncachedInputTokens: 1_000_000 }),
-    ]
-    const result = priceLedger(ledgerOf(rows), settingsOf([historical, current]))
-    const first = result.turns[0]!.attempts[0]!
-    const second = result.turns[0]!.attempts[1]!
-    expect(first.planId).toBe('historical')
-    expect(second.planId).toBe('current')
-  })
-
-  it('reprice mode prices every attempt with usable tokens, whatever model or provider produced them', () => {
-    const rows = [
-      attempt({ id: '1:0:0', startedAt: utc(2026, 8, 1, 0, 0), uncachedInputTokens: 1_000_000 }),
-      // A different model, an unmapped id, and a third-party gateway: the whole
-      // point of switching plans is "what would these tokens have cost at these
-      // rates", so none of them may gate the simulation.
-      attempt({ id: '1:1:0', model: 'deepseek-v4-pro', uncachedInputTokens: 1_000_000 }),
-      attempt({ id: '1:2:0', model: 'renamed-flash', uncachedInputTokens: 1_000_000 }),
-      attempt({ id: '1:3:0', model: 'mystery', provider: 'other-gateway', uncachedInputTokens: 1_000_000 }),
-    ]
-    const result = priceLedger(ledgerOf(rows), settingsOf([current], 'reprice'))
-    expect(result.coverage.priced).toBe(4)
-    expect(result.coverage.uncovered).toBe(0)
-    for (const entry of result.turns[0]!.attempts) {
-      expect(entry.planId).toBe('current')
-      expect(entry.cost?.total.toFixed()).toBe('0.22')
-    }
-    expect(result.cost.total.toFixed()).toBe('0.88')
-  })
-
-  it('reprice still refuses attempts whose token facts are unusable', () => {
-    const rows = [
-      attempt({ id: '1:0:0', completeness: 'usage-missing' }),
-      attempt({ id: '1:1:0', completeness: 'invalid' }),
-      attempt({ id: '1:2:0', cacheReadTokens: undefined }),
-      attempt({ id: '1:3:0', cacheWriteTokens: 5 }),
-    ]
-    const result = priceLedger(ledgerOf(rows), settingsOf([current], 'reprice'))
-    expect(result.coverage.uncovered).toBe(4)
-    expect(result.turns[0]!.attempts.map(entry => entry.reason))
-      .toEqual(['no-usage', 'invalid', 'no-split', 'cache-write'])
-  })
-
-  it('reprice prices an attempt whose route was never recorded', () => {
-    // Attribution needs the route; a counterfactual over the tokens does not.
-    const row = attempt({ model: undefined, completeness: 'route-missing', uncachedInputTokens: 1_000_000 })
-    expect(priceLedger(ledgerOf([row]), settingsOf([current], 'reprice')).coverage.priced).toBe(1)
-    expect(priceLedger(ledgerOf([row]), settingsOf([current])).coverage.byReason['no-route']).toBe(1)
-  })
-})
-
 describe('partial propagation', () => {
   it('keeps cache writes and missing cache splits out of the total, never as zero', () => {
     const rows = [
       attempt({ id: '1:0:0', cacheWriteTokens: 10, cacheReadTokens: 0 }),
       attempt({ id: '1:1:0', cacheReadTokens: undefined }),
-      attempt({ id: '1:2:0', provider: 'other-gateway' }),
+      attempt({ id: '1:2:0', completeness: 'usage-missing' }),
       attempt({ id: '1:3:0', completeness: 'invalid' }),
       attempt({ id: '1:4:0', uncachedInputTokens: 1_000_000, cacheReadTokens: 0 }),
     ]
     const result = priceLedger(ledgerOf(rows), settingsOf([flashPlan()]))
     const reasons = result.turns[0]!.attempts.map(entry => entry.reason)
-    expect(reasons).toEqual(['cache-write', 'no-split', 'not-official', 'invalid', undefined])
+    expect(reasons).toEqual(['cache-write', 'no-split', 'no-usage', 'invalid', undefined])
     expect(result.coverage.priced).toBe(1)
     expect(result.coverage.uncovered).toBe(4)
     expect(result.cost.total.toFixed()).toBe('0.22')
     expect(result.coverage.byReason['cache-write']).toBe(1)
+  })
+
+  it('claims no peak tiers when nothing was priced', () => {
+    const row = attempt({ completeness: 'usage-missing' })
+    const result = priceLedger(ledgerOf([row]), settingsOf([flashPlan()]))
+    expect(result.coverage.priced).toBe(0)
+    expect(result.coverage.peakTiered).toBe(false)
+  })
+
+  it('reports a plan without peak tiers as untiered', () => {
+    const flat = flashPlan({
+      schedule: null,
+      ratesPerMillion: { offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' } },
+    })
+    const row = attempt({ uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
+    const result = priceLedger(ledgerOf([row]), settingsOf([flat]))
+    expect(result.coverage.peakTiered).toBe(false)
+    expect(result.coverage.peak).toBe(0)
+    expect(result.cost.total.toFixed()).toBe('0.22')
   })
 })
 
@@ -314,77 +292,11 @@ describe('shipped official snapshot', () => {
     expect(expandOfficialModelIds('some-future-model')).toEqual(['some-future-model'])
   })
 
-  it('prices every id the flash family answers to with the shipped rates', () => {
-    for (const model of ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']) {
-      const row = attempt({ model, uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
-      const priced = priceLedger(ledgerOf([row]), defaultSettings())
-      expect(priced.coverage.priced).toBe(1)
-      expect(priced.cost.total.toFixed()).toBe('0.15')
-    }
-  })
-})
-
-describe('model aliases', () => {
-  it('prices a deployment model id through its alias in effective mode', () => {
-    const row = attempt({
-      model: 'deepseek-v4.1-flash-expires-on-0910',
-      uncachedInputTokens: 1_000_000,
-      cacheReadTokens: 0,
-      outputTokens: 0,
-    })
-    const aliases = { 'deepseek-v4.1-flash-expires-on-0910': 'deepseek-v4-flash-vision-exp' }
-    // Without the alias the attempt matches no plan.
-    expect(priceLedger(ledgerOf([row]), settingsOf([flashPlan()])).coverage.byReason['no-plan']).toBe(1)
-
-    const vision = flashPlan({ id: 'p-vision', modelIds: ['deepseek-v4-flash-vision-exp'] })
-    const priced = priceLedger(ledgerOf([row]), settingsOf([vision], 'effective', aliases))
+  it('prices a session at the selected plan’s shipped rates', () => {
+    const row = attempt({ model: 'deepseek-v4.1-flash-expires-on-0910', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
+    const priced = priceLedger(ledgerOf([row]), defaultSettings())
     expect(priced.coverage.priced).toBe(1)
-    expect(priced.turns[0]!.attempts[0]!.planId).toBe('p-vision')
-    // The alias target's rates are the ones charged.
-    expect(priced.cost.total.toFixed()).toBe('0.22')
-  })
-
-  it('prices an aliased id in effective mode and needs no alias under reprice', () => {
-    const row = attempt({ model: 'renamed-flash', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
-    const aliases = { 'renamed-flash': 'deepseek-v4-flash' }
-    // Effective mode attributes the cost, so it needs the alias...
-    expect(priceLedger(ledgerOf([row]), settingsOf([flashPlan()], 'effective', aliases)).coverage.priced).toBe(1)
-    // ...while reprice substitutes the model away and needs none.
-    expect(priceLedger(ledgerOf([row]), settingsOf([flashPlan()], 'reprice')).coverage.priced).toBe(1)
-  })
-
-  it('anchors the selected plan over exactly the attempts the view priced', () => {
-    // A gateway attempt is excluded from the actual cost; the anchor must not
-    // silently price it, or the delta would mix coverage into a rate compare.
-    const rows = [
-      attempt({ id: '1:0:0', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 }),
-      attempt({ id: '1:1:0', provider: 'other-gateway', uncachedInputTokens: 1_000_000 }),
-    ]
-    const other = flashPlan({ id: 'p-other', effectiveFrom: undefined })
-    const settings = { ...settingsOf([flashPlan()]), selectedPlanId: other.id, plans: [flashPlan(), other] }
-    const priced = priceLedger(ledgerOf(rows), settings)
-    expect(priced.coverage.priced).toBe(1)
-    expect(priced.anchor?.planId).toBe('p-other')
-    expect(priced.anchor?.total.toFixed()).toBe('0.22')
-  })
-
-  it('omits the anchor under reprice, where it would restate the total', () => {
-    const row = attempt({ uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
-    expect(priceLedger(ledgerOf([row]), settingsOf([flashPlan()], 'reprice')).anchor).toBeUndefined()
-  })
-
-  it('leaves an alias pointing at an unknown model unpriced rather than guessing', () => {
-    const row = attempt({ model: 'renamed-flash' })
-    const settings = settingsOf([flashPlan()], 'effective', { 'renamed-flash': 'no-such-model' })
-    const priced = priceLedger(ledgerOf([row]), settings)
-    expect(priced.coverage.byReason['no-plan']).toBe(1)
-  })
-
-  it('returns an unmapped id unchanged', () => {
-    expect(resolveModelAlias(undefined, 'm')).toBe('m')
-    expect(resolveModelAlias({}, 'm')).toBe('m')
-    expect(resolveModelAlias({ m: 'x' }, 'm')).toBe('x')
-    expect(resolveModelAlias({ m: 'x' }, 'other')).toBe('other')
+    expect(priced.cost.total.toFixed()).toBe('0.15')
   })
 })
 
@@ -408,21 +320,49 @@ describe('settings schema', () => {
     expect(pricingPlanSchema.safeParse(flashPlan({ schedule: { ...SCHEDULE, peakWindows: [['01:00', '03:00'], ['02:00', '04:00']] } })).success).toBe(false)
     expect(pricingPlanSchema.safeParse(flashPlan({ schedule: SCHEDULE, ratesPerMillion: { offPeak: { cacheMiss: '0.22', cacheHit: '0.007', output: '0.66' } } })).success).toBe(false)
     expect(pricingPlanSchema.safeParse(flashPlan({ modelIds: [] })).success).toBe(false)
-    // A startless plan is valid, but it cannot also declare an end.
+    // An unknown start is valid, but it cannot also declare an end.
     expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: undefined })).success).toBe(true)
     expect(pricingPlanSchema.safeParse(flashPlan({ effectiveFrom: undefined, effectiveTo: '2026-10-01' })).success).toBe(false)
   })
 
-  it('round-trips the alias map and rejects a malformed one', () => {
-    const withAliases = { ...defaultSettings(), aliases: { 'deepseek-v4.1-flash-expires-on-0910': 'deepseek-v4-flash-vision-exp' } }
-    expect(parsePersistedSettings(withAliases)).toEqual(withAliases)
-    expect(parsePersistedSettings({ ...defaultSettings(), aliases: { '': 'x' } })).toBeUndefined()
-    expect(parsePersistedSettings({ ...defaultSettings(), aliases: { a: '' } })).toBeUndefined()
-    expect(parsePersistedSettings({ ...defaultSettings(), aliases: { a: 1 } })).toBeUndefined()
+  it('upgrades a v1 blob, keeping its plans and selection', () => {
+    const plans = [...officialSeedPlans]
+    const upgraded = parsePersistedSettings({
+      schemaVersion: 1,
+      selectedPlanId: plans[1]!.id,
+      mode: 'effective',
+      plans,
+      aliases: { 'deepseek-v4.1-flash-expires-on-0910': 'deepseek-v4-flash-vision-exp' },
+      lastOfficialRefresh: '2026-09-10T00:00:00.000Z',
+    })
+    expect(upgraded).toEqual({
+      schemaVersion: 2,
+      selectedPlanId: plans[1]!.id,
+      plans,
+      lastOfficialRefresh: '2026-09-10T00:00:00.000Z',
+    })
   })
 
-  it('returns undefined for a corrupted or legacy settings blob', () => {
+  it('reads the retired keys a merged write leaves behind', () => {
+    // Settings writes merge plain objects recursively, so the keys dropped from
+    // this schema stay in the stored document after the first write — the exact
+    // blob a version 1 install has on disk once it switches plans.
+    const plans = [...officialSeedPlans]
+    const read = parsePersistedSettings({
+      schemaVersion: 2,
+      selectedPlanId: plans[1]!.id,
+      mode: 'effective',
+      plans,
+      aliases: { 'deepseek-v4.1-flash-expires-on-0910': 'deepseek-flash' },
+    })
+    expect(read).toEqual({ schemaVersion: 2, selectedPlanId: plans[1]!.id, plans })
+  })
+
+  it('returns undefined for a corrupted blob', () => {
     expect(parsePersistedSettings({ schemaVersion: 0, plans: [] })).toBeUndefined()
-    expect(parsePersistedSettings({ ...defaultSettings(), mode: 'bogus' })).toBeUndefined()
+    expect(parsePersistedSettings({ ...defaultSettings(), plans: [] })).toBeUndefined()
+    expect(parsePersistedSettings({ ...defaultSettings(), selectedPlanId: '' })).toBeUndefined()
+    // A v1 blob whose own fields are invalid is still unreadable.
+    expect(parsePersistedSettings({ schemaVersion: 1, selectedPlanId: 'x', mode: 'effective', plans: [] })).toBeUndefined()
   })
 })

@@ -27,7 +27,7 @@ import type { PersistedSettings, PricingPlan } from './schema.ts';
 export declare const FLASH_MODEL_IDS: readonly string[];
 /** The shipped official plan catalog (one plan per model). */
 export declare const officialSeedPlans: readonly PricingPlan[];
-/** Default settings: the official snapshot, effective mode, first plan selected. */
+/** Default settings: the official snapshot with its first plan selected. */
 export declare function defaultSettings(): PersistedSettings;
 /**
  * Every id a page-listed model also answers to. The page names the flash model

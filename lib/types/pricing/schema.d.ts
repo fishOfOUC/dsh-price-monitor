@@ -68,23 +68,21 @@ export declare const pricingPlanSchemaStrict: ZodType<PricingPlan>;
 export type PricingPlan = z.infer<typeof pricingPlanSchema>;
 export type RateBand = z.infer<typeof rateBandSchema>;
 export type PeakSchedule = z.infer<typeof peakScheduleSchema>;
-/** Pricing mode: historical per-attempt plan, or reprice everything at one plan. */
-export type PricingMode = 'effective' | 'reprice';
 /**
  * The single persisted settings blob under `pluginSettings['price-monitor'].catalog`.
  *
- * `aliases` maps a deployment's own model id onto one named by a plan, so a
- * harness that exposes the same underlying model under a different id can be
- * priced without touching the read-only official plans or guessing an id into
- * the shipped snapshot. A target that no plan names simply stays unpriced.
+ * The selected plan is the whole pricing basis: it prices every attempt of the
+ * session, so switching plans changes every amount the tab shows.
+ *
+ * Unknown keys are stripped, not rejected: every write goes through the
+ * settings service as a patch whose plain objects merge recursively and whose
+ * arrays replace wholesale, so a key this schema no longer declares stays in
+ * the stored document forever. A version 1 blob is therefore nothing more than
+ * a version 2 blob with two retired keys, and both read here.
  */
 export declare const persistedSettingsSchema: z.ZodObject<{
-    schemaVersion: z.ZodLiteral<1>;
+    schemaVersion: z.ZodUnion<readonly [z.ZodLiteral<1>, z.ZodLiteral<2>]>;
     selectedPlanId: z.ZodString;
-    mode: z.ZodEnum<{
-        effective: "effective";
-        reprice: "reprice";
-    }>;
     plans: z.ZodArray<z.ZodObject<{
         id: z.ZodString;
         name: z.ZodString;
@@ -120,16 +118,18 @@ export declare const persistedSettingsSchema: z.ZodObject<{
             contentHash: z.ZodString;
         }, z.core.$strict>>;
     }, z.core.$strict>>;
-    aliases: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     lastOfficialRefresh: z.ZodOptional<z.ZodString>;
-}, z.core.$strict>;
-export type PersistedSettings = z.infer<typeof persistedSettingsSchema>;
+}, z.core.$strip>;
+export type PersistedSettings = Omit<z.infer<typeof persistedSettingsSchema>, 'schemaVersion'> & {
+    /** The generation this build writes; a version 1 blob reads as version 2. */
+    readonly schemaVersion: 2;
+};
 /**
- * Parse a stored settings blob; failures (corruption, unknown fields, an
- * older schema) yield undefined so the caller can offer a reset instead of
- * silently dropping the user's manual plans.
+ * Parse a stored settings blob; failures (an unreadable structure, a schema
+ * generation this build does not know) yield undefined so the caller can offer
+ * a reset instead of silently dropping the user's manual plans.
  * @param value - the persisted blob.
- * @returns the validated settings, or undefined when unreadable.
+ * @returns the validated settings, normalized to the current schema version.
  */
 export declare function parsePersistedSettings(value: unknown): PersistedSettings | undefined;
 /**
