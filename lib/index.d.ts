@@ -144,25 +144,15 @@ declare const priceMonitorUsageProjectionDefinition: {
   };
 };
 //#endregion
+//#region src/pricing/schema.d.ts
+/** A currency a set of published rates is denominated in. */
+declare const currencySchema: z.ZodEnum<{
+  USD: "USD";
+  CNY: "CNY";
+}>;
+type Currency = z.infer<typeof currencySchema>;
+//#endregion
 //#region src/official-pricing.d.ts
-/**
- * Strict parser for the DeepSeek official pricing page, plus the shared
- * candidate/diff vocabulary the client uses to preview a refresh before
- * applying it.
- *
- * The page is a Docusaurus table transposed so models are columns and pricing
- * categories are rows, with rowspan carrying the label cells down. The parser
- * reconstructs a rectangular grid, locates the model header and the three
- * priced categories (cache hit / cache miss / output) across the off-peak and
- * peak bands, and validates the structure strictly — a changed header, a
- * missing category, a malformed amount, a broken peak/off-peak 2x relation, or
- * a different peak-window footnote all fail, so a changed page can never be
- * half-imported over the last good catalog.
- *
- * This module is node-free: the host route adds hashing and the network fetch.
- *
- * @module dsh-price-monitor/official-pricing
- */
 /** One parsed model's four rates (per million tokens, decimal strings). */
 interface OfficialModelRates {
   readonly model: string;
@@ -177,6 +167,8 @@ interface OfficialModelRates {
 interface ParsedOfficialPricing {
   readonly models: readonly OfficialModelRates[];
   readonly peakWindows: readonly [readonly [string, string], readonly [string, string]];
+  /** The currency the page printed (CNY on the Chinese page). */
+  readonly currency: Currency;
 }
 /** One field-level change between a previous and a candidate rate. */
 interface OfficialDiffEntry {

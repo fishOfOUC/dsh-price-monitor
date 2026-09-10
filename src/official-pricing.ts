@@ -3,14 +3,17 @@
  * candidate/diff vocabulary the client uses to preview a refresh before
  * applying it.
  *
- * The page is a Docusaurus table transposed so models are columns and pricing
- * categories are rows, with rowspan carrying the label cells down. The parser
- * reconstructs a rectangular grid, locates the model header and the three
- * priced categories (cache hit / cache miss / output) across the off-peak and
- * peak bands, and validates the structure strictly — a changed header, a
- * missing category, a malformed amount, a broken peak/off-peak 2x relation, or
- * a different peak-window footnote all fail, so a changed page can never be
- * half-imported over the last good catalog.
+ * The parser reads the Chinese page, whose prices are the primary published
+ * numbers in CNY; the English page prints the same rates as a rounded USD
+ * conversion, and nothing here converts anything. The page is a Docusaurus
+ * table transposed so models are columns and pricing categories are rows, with
+ * rowspan carrying the label cells down. The parser reconstructs a rectangular
+ * grid, locates the model header and the three priced categories (cache hit /
+ * cache miss / output) across the off-peak and peak bands, and validates the
+ * structure strictly — a changed header, a missing category, a malformed
+ * amount, a broken peak/off-peak 2x relation, or a different peak-window
+ * footnote all fail, so a changed page can never be half-imported over the last
+ * good catalog.
  *
  * This module is node-free: the host route adds hashing and the network fetch.
  *
@@ -18,9 +21,14 @@
  */
 
 import { Parser } from 'htmlparser2'
+import type { Currency } from './pricing/schema.ts'
 
-const AMOUNT = /^\$?(\d+(?:\.\d+)?)$/
-const WINDOW_FOOTNOTE = /Peak hours are\s+(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\s+and\s+(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})\s+UTC,\s+Monday through Friday/
+/** A price cell: a decimal amount with the page's own yuan suffix. */
+const AMOUNT = /^(\d+(?:\.\d+)?)元$/
+/** The page's peak hours, stated in Beijing time as `H:MM - H:MM、H:MM - H:MM`. */
+const WINDOW_FOOTNOTE = /高峰时段为北京时间周一至周五\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})、(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/
+/** The only currency this page prints. */
+const PAGE_CURRENCY: Currency = 'CNY'
 
 /** One parsed model's four rates (per million tokens, decimal strings). */
 export interface OfficialModelRates {
@@ -37,11 +45,15 @@ export interface OfficialModelRates {
 export interface ParsedOfficialPricing {
   readonly models: readonly OfficialModelRates[]
   readonly peakWindows: readonly [readonly [string, string], readonly [string, string]]
+  /** The currency the page printed (CNY on the Chinese page). */
+  readonly currency: Currency
 }
 
 /** The candidate the host route returns for client preview. */
 export interface OfficialPricingCandidate {
   readonly models: readonly OfficialModelRates[]
+  readonly peakWindows: readonly [readonly [string, string], readonly [string, string]]
+  readonly currency: Currency
   readonly fetchedAt: string
   readonly contentHash: string
   readonly sourceUrl: string
@@ -155,9 +167,17 @@ function parseTable(html: string): string[][] {
 
 const normalize = (value: string): string => value.replace(/\s+/g, ' ').trim()
 
+/** Drop trailing fractional zeros (`0.30` → `0.3`), so equal rates compare equal. */
+function canonicalRate(value: string): string {
+  if (!value.includes('.')) return value
+  const trimmed = value.replace(/0+$/, '').replace(/\.$/, '')
+  return trimmed === '' ? '0' : trimmed
+}
+
+/** The canonical decimal amount of one price cell, or undefined when malformed. */
 function stripAmount(value: string): string | undefined {
   const match = AMOUNT.exec(normalize(value))
-  return match?.[1]
+  return match === null ? undefined : canonicalRate(match[1]!)
 }
 
 /** Multiply a decimal string by two, exactly (rates are fixed-point). */
@@ -181,12 +201,44 @@ function doubleRate(value: string): string {
 
 type Category = 'cacheHit' | 'cacheMiss' | 'output'
 
+/**
+ * The priced category a row labels. The miss label contains the hit one's
+ * characters but not as a contiguous run, and it is matched first so a future
+ * rewording cannot silently swap the two.
+ */
 function categoryOf(cell: string): Category | undefined {
-  const value = normalize(cell).toUpperCase()
-  if (value.includes('CACHE HIT')) return 'cacheHit'
-  if (value.includes('CACHE MISS')) return 'cacheMiss'
-  if (value.includes('OUTPUT')) return 'output'
+  const value = normalize(cell)
+  if (value.includes('缓存未命中')) return 'cacheMiss'
+  if (value.includes('缓存命中')) return 'cacheHit'
+  if (value.includes('输出')) return 'output'
   return undefined
+}
+
+/** The model header row's leading label. */
+const MODEL_HEADER = '模型'
+
+/** The two rate bands the page prints, and the peak schedule they imply. */
+const OFF_PEAK_BAND = '空闲时段'
+const PEAK_BAND = '高峰时段'
+
+/** The peak windows the page's Beijing-time footnote must still name. */
+const EXPECTED_PEAK_WINDOWS: readonly [readonly [string, string], readonly [string, string]] = [
+  ['01:00', '04:00'],
+  ['06:00', '10:00'],
+]
+
+/** Beijing time is UTC+8 all year, so the page's clock maps to UTC by subtraction. */
+const BEIJING_OFFSET_HOURS = 8
+
+/** `H:MM` or `HH:MM` to minutes after midnight. */
+function clockMinutes(clock: string): number {
+  const [hour, minute] = clock.split(':').map(Number)
+  return hour! * 60 + minute!
+}
+
+/** Minutes after midnight to `HH:MM`. */
+function clockOf(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
 }
 
 const MODEL_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
@@ -200,12 +252,12 @@ const MODEL_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
  */
 export function parseOfficialPricing(html: string): ParsedOfficialPricing | undefined {
   const grid = parseTable(html)
-  const header = grid.find(row => normalize(row[0] ?? '') === 'MODEL')
+  const header = grid.find(row => normalize(row[0] ?? '') === MODEL_HEADER)
   if (header === undefined || grid.length < 2) return undefined
 
-  // The 'MODEL' label spans the leading columns, so the model ids are the
+  // The model label spans the leading columns, so the model ids are the
   // remaining non-empty cells that are not the label itself.
-  const models = header.slice(1).map(normalize).filter(value => value !== '' && value.toUpperCase() !== 'MODEL')
+  const models = header.slice(1).map(normalize).filter(value => value !== '' && value !== MODEL_HEADER)
   if (models.length === 0) return undefined
   if (models.some(model => !MODEL_ID.test(model))) return undefined
   if (new Set(models).size !== models.length) return undefined
@@ -218,11 +270,11 @@ export function parseOfficialPricing(html: string): ParsedOfficialPricing | unde
     const category = categoryOf(row[1] ?? '')
     if (category === undefined) continue
     const band = normalize(row[2] ?? '')
-    if (band !== 'OFF-PEAK' && band !== 'PEAK') continue
+    if (band !== OFF_PEAK_BAND && band !== PEAK_BAND) continue
     const prices = row.slice(3, 3 + models.length).map(stripAmount)
     if (prices.length !== models.length || prices.some(value => value === undefined)) return undefined
     const slot = rates.get(category)!
-    const key = band === 'OFF-PEAK' ? 'off' : 'peak'
+    const key = band === OFF_PEAK_BAND ? 'off' : 'peak'
     if (slot[key] !== undefined) return undefined // duplicate band row
     slot[key] = prices as string[]
   }
@@ -240,15 +292,22 @@ export function parseOfficialPricing(html: string): ParsedOfficialPricing | unde
     }
   }
 
-  // The peak-window footnote must still name the same two UTC windows.
+  // The peak-window footnote must still name the same two Beijing-time windows,
+  // which are the same two UTC windows the schedule prices with.
   const footnote = WINDOW_FOOTNOTE.exec(html)
   if (footnote === null) return undefined
-  const windows: readonly [readonly [string, string], readonly [string, string]] = [
+  const windows: [readonly [string, string], readonly [string, string]] = [
     [footnote[1]!, footnote[2]!],
     [footnote[3]!, footnote[4]!],
   ]
-  if (windows[0][0] !== '01:00' || windows[0][1] !== '04:00'
-    || windows[1][0] !== '06:00' || windows[1][1] !== '10:00') {
+  const toUtc = (clock: string): string =>
+    clockOf((clockMinutes(clock) - BEIJING_OFFSET_HOURS * 60 + 24 * 60) % (24 * 60))
+  const utcWindows: readonly [readonly [string, string], readonly [string, string]] = [
+    [toUtc(footnote[1]!), toUtc(footnote[2]!)],
+    [toUtc(footnote[3]!), toUtc(footnote[4]!)],
+  ]
+  if (utcWindows[0][0] !== EXPECTED_PEAK_WINDOWS[0][0] || utcWindows[0][1] !== EXPECTED_PEAK_WINDOWS[0][1]
+    || utcWindows[1][0] !== EXPECTED_PEAK_WINDOWS[1][0] || utcWindows[1][1] !== EXPECTED_PEAK_WINDOWS[1][1]) {
     return undefined
   }
 
@@ -266,7 +325,8 @@ export function parseOfficialPricing(html: string): ParsedOfficialPricing | unde
       output: output.off![index]!,
       peakOutput: output.peak![index]!,
     })),
-    peakWindows: windows,
+    peakWindows: EXPECTED_PEAK_WINDOWS,
+    currency: PAGE_CURRENCY,
   }
 }
 

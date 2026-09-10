@@ -275,14 +275,18 @@ describe('shipped official snapshot', () => {
     const [flash, pro] = officialSeedPlans
     expect(flash!.modelIds).toEqual(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])
     expect(pro!.modelIds).toEqual(['deepseek-v4-pro'])
+    // The yuan figures the Chinese page prints, which are the primary
+    // published numbers; the English page prints their rounded USD conversion.
     expect(flash!.ratesPerMillion).toEqual({
-      offPeak: { cacheMiss: '0.15', cacheHit: '0.003', output: '0.6' },
-      peak: { cacheMiss: '0.3', cacheHit: '0.006', output: '1.2' },
+      offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '4' },
+      peak: { cacheMiss: '2', cacheHit: '0.04', output: '8' },
     })
     expect(pro!.ratesPerMillion).toEqual({
-      offPeak: { cacheMiss: '0.66', cacheHit: '0.022', output: '1.98' },
-      peak: { cacheMiss: '1.32', cacheHit: '0.044', output: '3.96' },
+      offPeak: { cacheMiss: '4.5', cacheHit: '0.15', output: '13.5' },
+      peak: { cacheMiss: '9', cacheHit: '0.3', output: '27' },
     })
+    expect(flash!.currency).toBe('CNY')
+    expect(flash!.provenance?.url).toContain('/zh-cn/')
   })
 
   it('expands a page-listed flash id to the whole family and leaves others alone', () => {
@@ -293,10 +297,12 @@ describe('shipped official snapshot', () => {
   })
 
   it('prices a session at the selected plan’s shipped rates', () => {
+    // An id no plan names is still priced: the selected plan is the basis, so
+    // a deployment's own model id needs no mapping.
     const row = attempt({ model: 'deepseek-v4.1-flash-expires-on-0910', uncachedInputTokens: 1_000_000, cacheReadTokens: 0, outputTokens: 0 })
     const priced = priceLedger(ledgerOf([row]), defaultSettings())
     expect(priced.coverage.priced).toBe(1)
-    expect(priced.cost.total.toFixed()).toBe('0.15')
+    expect(priced.cost.total.toFixed()).toBe('1')
   })
 })
 

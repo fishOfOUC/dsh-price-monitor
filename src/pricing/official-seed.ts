@@ -4,24 +4,29 @@
  * a live price oracle: the UI shows the fetch date and a link to the source,
  * and the host route refreshes it (see stage D) into new immutable versions.
  *
- * Snapshot date 2026-09-10, source https://api-docs.deepseek.com/quick_start/pricing/,
- * all rates in USD per million tokens. Peak windows are UTC, Monday–Friday,
- * 01:00–04:00 and 06:00–10:00 (left-closed, right-open).
+ * Snapshot date 2026-09-10, source
+ * https://api-docs.deepseek.com/zh-cn/quick_start/pricing/, all rates in CNY
+ * per million tokens — the Chinese page prints the primary numbers and the
+ * English page prints their rounded USD conversion, so this snapshot keeps the
+ * former and converts nothing. Peak windows are UTC, Monday–Friday,
+ * 01:00–04:00 and 06:00–10:00 (left-closed, right-open), which the page states
+ * as Beijing time 09:00–12:00 and 14:00–18:00.
  *
  * The page lists two priced models — the flash model (DeepSeek-V4.1-Flash on
- * this snapshot) and the pro model — and one flash price. Vision is a
- * capability of that flash model rather than a separate price line, so one
- * plan covers the ids the flash model has been listed or reported under
- * ({@link FLASH_MODEL_IDS}). Availability and naming change without notice;
- * the refresh route is the way to re-read them.
+ * this snapshot) and the pro model. Vision is a capability of that flash model
+ * rather than a separate price line, so one plan covers the ids the flash
+ * model has been listed or reported under ({@link FLASH_MODEL_IDS}).
+ * Availability and naming change without notice; the refresh route is the way
+ * to re-read them.
  *
  * @module dsh-price-monitor/pricing/official-seed
  */
 
 import type { PeakSchedule, PersistedSettings, PricingPlan } from './schema.ts'
 
-const SOURCE_URL = 'https://api-docs.deepseek.com/quick_start/pricing/'
+const SOURCE_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'
 const SNAPSHOT_DATE = '2026-09-10'
+const SOURCE_CURRENCY = 'CNY'
 
 /** Shared peak schedule for every official model in this snapshot. */
 const OFFICIAL_SCHEDULE: PeakSchedule = {
@@ -54,8 +59,8 @@ export const FLASH_MODEL_IDS: readonly string[] = [
 ]
 
 const MODELS: readonly ModelRates[] = [
-  { models: FLASH_MODEL_IDS, cacheHit: '0.003', cacheMiss: '0.15', output: '0.6', peakCacheHit: '0.006', peakCacheMiss: '0.3', peakOutput: '1.2' },
-  { models: ['deepseek-v4-pro'], cacheHit: '0.022', cacheMiss: '0.66', output: '1.98', peakCacheHit: '0.044', peakCacheMiss: '1.32', peakOutput: '3.96' },
+  { models: FLASH_MODEL_IDS, cacheHit: '0.02', cacheMiss: '1', output: '4', peakCacheHit: '0.04', peakCacheMiss: '2', peakOutput: '8' },
+  { models: ['deepseek-v4-pro'], cacheHit: '0.15', cacheMiss: '4.5', output: '13.5', peakCacheHit: '0.3', peakCacheMiss: '9', peakOutput: '27' },
 ]
 
 /** Stable short content hash so a plan id is derived from its rates. */
@@ -76,7 +81,7 @@ function seedPlan(entry: ModelRates): PricingPlan {
     source: 'official',
     provider: 'deepseek-official',
     modelIds: [...entry.models],
-    currency: 'USD',
+    currency: SOURCE_CURRENCY,
     // No declared start: the snapshot observes today's rates, so it applies
     // back to the beginning of the log and any later-fetched version wins.
     schedule: OFFICIAL_SCHEDULE,

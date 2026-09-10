@@ -35,7 +35,7 @@ it: the ledger has no UI besides that tab.
 
 - **Total cost** for the current session at the selected plan's rates, with the
   exact three-bucket split (cache miss / cache hit / output) in both tokens and
-  USD.
+  money, in the plan's own currency.
 - **Per-turn list**: every turn with its tokens and cost, expandable to each
   billed request attempt — including attempts that retried, switched model, or
   cannot be priced.
@@ -91,23 +91,23 @@ stays a `Decimal` until display.
 
 ### Currency
 
-A plan carries the currency its publisher printed, and **no conversion is ever
-applied**: DeepSeek publishes the same rates as USD on the English page and as
-CNY on the Chinese one, and those are not the same numbers — the Chinese column
-is the primary one and the English column is its rounded conversion (1 USD ≈
-6.818 CNY on the 2026-09-10 snapshot, which is why flash reads `$0.003 / $0.15 /
-$0.6` in English and `¥0.02 / ¥1 / ¥4` in Chinese).
+**Official pricing is CNY by default**: both the bundled snapshot and the
+refresh route read DeepSeek's Chinese pricing page, which prints the primary
+published numbers in yuan. The English page prints the same rates as a rounded
+USD conversion of them (1 USD ≈ 6.818 CNY on the 2026-09-10 snapshot: flash is
+`¥0.02 / ¥1 / ¥4` in Chinese against `$0.003 / $0.15 / $0.6` in English), and
+this plugin never converts between the two.
 
-An amount therefore always reads in the currency of the plan that produced it,
-and `$0.15` and `¥1` are never silently added together. The same rule governs
-the comparison list: rows of different currencies still list their totals, but
-no percentage is shown between them, because a ratio across currencies would be
-meaningless. Copy an official plan into a manual one to restate it in the other
-currency.
+A plan therefore carries the currency its publisher printed — `CNY` for the
+official plans, and whichever currency a manual plan was saved in — and an
+amount always reads in the currency of the plan that produced it. `$0.15` and
+`¥1` are never silently added together. The same rule governs the comparison
+list: rows of different currencies still list their totals, but no percentage is
+shown between them, because a ratio across currencies would be meaningless.
 
-The bundled official snapshot and the refresh route both use the English page's
-USD figures. If you account in CNY, add manual plans in CNY — a plan's
-`modelIds` never affects an amount, so a CNY plan prices any session.
+Add a manual plan in USD if you account in dollars, and copy an official plan
+into a manual one to restate it in the other currency. A plan's `modelIds` never
+affects an amount, so a USD plan prices any session just as a CNY one does.
 
 ### Price phases
 
@@ -165,13 +165,15 @@ route, which:
 1. requires the browser-trust fence (Host header must be loopback or a
    configured trusted authority; `cross-site` and mismatched `Origin` are
    refused) and POST only;
-2. fetches one hard-coded URL (`https://api-docs.deepseek.com/quick_start/pricing/`)
-   — a client payload cannot change the target, redirects must stay HTTPS on
-   that one host, and the body is capped at 256 KiB and must be HTML;
-3. parses the page strictly: model header, the three priced categories across
-   both bands, the peak = 2 × off-peak relation, and the peak-window footnote.
-   Any structural change fails the whole import (HTTP 502) and the caller keeps
-   the last good catalog;
+2. fetches one hard-coded URL
+   (`https://api-docs.deepseek.com/zh-cn/quick_start/pricing/`) — a client
+   payload cannot change the target, redirects must stay HTTPS on that one host,
+   and the body is capped at 256 KiB and must be HTML;
+3. parses the page strictly: the model header, the three priced categories
+   across both bands, the peak = 2 × off-peak relation, and the peak-window
+   footnote (the page states it in Beijing time; the schedule stores the
+   equivalent UTC windows). Any structural change fails the whole import
+   (HTTP 502) and the caller keeps the last good catalog;
 4. returns a per-field diff. The user confirms in the tab before anything is
    written, and applying appends new immutable official versions (fresh ids) —
    previous versions stay for historical comparison.

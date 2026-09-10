@@ -100,6 +100,7 @@ export const en = {
   'refresh.noChange': 'No change against the bundled snapshot.',
   'refresh.hash': 'Content hash {hash}',
   'refresh.confirm': 'Apply as new official versions',
+  'refresh.applyNote': 'Applying replaces your official plans with these versions. Manual plans are kept.',
 
   'settings.title': 'Price monitor plans',
   'settings.hint': 'Official plans are read-only; duplicate one to edit its rates.',
@@ -122,7 +123,7 @@ export const en = {
   'settings.peakMiss': 'Peak miss',
   'settings.peakHit': 'Peak hit',
   'settings.peakOutput': 'Peak output',
-  'settings.currencyNote': 'A plan keeps the currency its publisher printed: DeepSeek publishes USD in English and CNY in Chinese, and the two are not the same numbers. Nothing is converted, so an amount always reads in the selected plan’s currency.',
+  'settings.currencyNote': 'Official pricing comes from DeepSeek’s Chinese page, so it is in CNY. A plan keeps the currency it was saved in and nothing is converted, so an amount always reads in the selected plan’s currency.',
   'settings.deleteConfirm': 'Delete this plan?',
   'settings.lastPlan': 'The last remaining plan cannot be deleted.',
   'settings.invalidRates': 'Every rate must be a non-negative decimal.',
@@ -218,6 +219,7 @@ export const zh: Record<keyof typeof en, string> = {
   'refresh.noChange': '与随包快照相比没有变化。',
   'refresh.hash': '内容 hash {hash}',
   'refresh.confirm': '确认为新的官方版本',
+  'refresh.applyNote': '确认后会替换现有的官方方案；手工方案不受影响。',
 
   'settings.title': '费用监控方案',
   'settings.hint': '官方方案只读；需要修改时先复制为手工方案。',
@@ -240,7 +242,7 @@ export const zh: Record<keyof typeof en, string> = {
   'settings.peakMiss': '高峰·未命中',
   'settings.peakHit': '高峰·命中',
   'settings.peakOutput': '高峰·输出',
-  'settings.currencyNote': '方案保留官方公布的原始货币：DeepSeek 英文页用美元、中文页用人民币，两者并不是同一组数字。插件不做汇率换算，金额始终按所选方案的货币显示。',
+  'settings.currencyNote': '官方价格取自 DeepSeek 中文价格页，因此是人民币。方案按保存时的货币计价，插件不做汇率换算，金额始终按所选方案的货币显示。',
   'settings.deleteConfirm': '确定删除该方案？',
   'settings.lastPlan': '最后一个方案不能删除。',
   'settings.invalidRates': '每一项单价都必须是非负十进制数。',

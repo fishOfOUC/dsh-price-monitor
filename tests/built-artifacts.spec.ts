@@ -160,10 +160,13 @@ describe('host route over real HTTP', () => {
   it('answers a same-origin POST with a validated candidate and diff, ignoring a client-supplied URL', async () => {
     const { officialPricingRoute } = await import('../src/official-pricing-route.ts')
     const fixture = read('fixtures/official-pricing.html')
+    // The page with the flash model renamed: the diff must name exactly that
+    // one movement and nothing else.
+    const renamed = fixture.replace('>deepseek-flash<sup>', '>deepseek-nexus<sup>')
     const calls: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
       calls.push(String(input))
-      return new Response(fixture, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+      return new Response(renamed, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
     }))
 
     const route = officialPricingRoute([])
@@ -177,20 +180,19 @@ describe('host route over real HTTP', () => {
       expect(response.status).toBe(200)
       const body = await response.json() as {
         ok: boolean
-        candidate: { models: unknown[], contentHash: string, sourceUrl: string },
+        candidate: { models: unknown[], currency: string, contentHash: string, sourceUrl: string },
         diff: { addedModels: string[], removedModels: string[], changed: unknown[] }
       }
       expect(body.ok).toBe(true)
-      expect(body.candidate.models).toHaveLength(3)
+      expect(body.candidate.models).toHaveLength(2)
+      expect(body.candidate.currency).toBe('CNY')
       expect(body.candidate.contentHash).toMatch(/^[0-9a-f]{64}$/)
-      expect(body.candidate.sourceUrl).toBe('https://api-docs.deepseek.com/quick_start/pricing/')
-      // This fixture is the page as it looked before the flash model was
-      // renamed, while the shipped snapshot is the page after: the diff must
-      // name exactly those two movements and nothing else.
-      expect([...body.diff.addedModels].sort()).toEqual(['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])
+      expect(body.candidate.sourceUrl).toBe('https://api-docs.deepseek.com/zh-cn/quick_start/pricing/')
+      expect(body.diff.addedModels).toEqual(['deepseek-nexus'])
       expect(body.diff.removedModels).toEqual(['deepseek-flash'])
+      expect(body.diff.changed).toEqual([])
       // The fixed target was used despite the payload's url field.
-      expect(calls).toEqual(['https://api-docs.deepseek.com/quick_start/pricing/'])
+      expect(calls).toEqual(['https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'])
     } finally {
       vi.unstubAllGlobals()
       await gateway.close()
@@ -198,10 +200,10 @@ describe('host route over real HTTP', () => {
   })
 
   it('reports no change when the page still matches the shipped snapshot', async () => {
-    // The two-model page the snapshot was taken from: this is the check that
-    // keeps the bundled rates honest between reviews.
+    // The saved page the snapshot was taken from: this is the check that keeps
+    // the bundled rates honest between reviews.
     const { officialPricingRoute } = await import('../src/official-pricing-route.ts')
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(read('fixtures/official-pricing-two-model.html'), {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(read('fixtures/official-pricing.html'), {
       status: 200,
       headers: { 'content-type': 'text/html; charset=utf-8' },
     })))

@@ -131,9 +131,9 @@ function tabProps(store: SidebarStore, ledger: PriceMonitorUsageView): TabCompon
   } as TabComponentProps
 }
 
-/** All `$` amounts in a rendered markup string, as numbers. */
+/** All money amounts in a rendered markup string, as numbers. */
 function amountsIn(markup: string): number[] {
-  return [...markup.matchAll(/\$(\d+\.\d+)/g)].map(match => Number(match[1]))
+  return [...markup.matchAll(/[$¥](\d+\.\d+)/g)].map(match => Number(match[1]))
 }
 
 /** The first amount inside the hero element (the session total). */
@@ -145,12 +145,12 @@ function heroTotal(markup: string, symbol = '\\$'): number {
 
 /** Turn-row totals in render order, from their cost spans. */
 function turnTotals(markup: string): number[] {
-  return [...markup.matchAll(/dpm-turn__cost dpm-num(?:[^>]*)>\$(\d+\.\d+)/g)].map(match => Number(match[1]))
+  return [...markup.matchAll(/dpm-turn__cost dpm-num(?:[^>]*)>[$¥](\d+\.\d+)/g)].map(match => Number(match[1]))
 }
 
 /** The first rate in the plan card's rate table (its cache-miss cell). */
 function rateTableOf(markup: string): string | undefined {
-  return /dpm-table[\s\S]*?dpm-num">(\$\d+\.\d+)/.exec(markup)?.[1]
+  return /dpm-table[\s\S]*?dpm-num">([$¥]\d+(?:\.\d+)?)</.exec(markup)?.[1]
 }
 
 describe('client activation', () => {
@@ -234,7 +234,7 @@ describe('rendered tab', () => {
   it('renders the hero total as the exact sum of the per-turn rows', () => {
     const { store } = storeWith(defaultSettings())
     const markup = renderToStaticMarkup(<PriceMonitorTab {...tabProps(store, LEDGER)} />)
-    const total = heroTotal(markup)
+    const total = heroTotal(markup, '¥')
     const rows = turnTotals(markup)
     expect(rows).toHaveLength(2)
     const sum = rows.reduce((left, right) => left + right, 0)
@@ -264,16 +264,16 @@ describe('rendered tab', () => {
 
     // Turn 1 runs in a peak window (1M miss / 2M cache-read / 0.5M output) and
     // turn 2 off-peak (0.1M miss / 10k output), so flash is
-    // 0.3 + 2×0.006 + 0.5×1.2 + 0.1×0.15 + 0.01×0.6 = 0.933 and the pro plan
-    // is 1.32 + 2×0.044 + 0.5×3.96 + 0.1×0.66 + 0.01×1.98 = 3.4738.
-    expect(heroTotal(atFlash)).toBeCloseTo(0.933, 8)
-    expect(heroTotal(atPro)).toBeCloseTo(3.4738, 8)
+    // 2 + 2×0.04 + 0.5×8 + 0.1×1 + 0.01×4 = 6.22 yuan and the pro plan is
+    // 9 + 2×0.3 + 0.5×27 + 0.1×4.5 + 0.01×13.5 = 23.685 yuan.
+    expect(heroTotal(atFlash, '¥')).toBeCloseTo(6.22, 8)
+    expect(heroTotal(atPro, '¥')).toBeCloseTo(23.685, 8)
     // The breakdown, the rate table, and the turn rows move with it, not just
     // the hero.
     expect(amountsIn(atPro)).not.toEqual(amountsIn(atFlash))
     expect(turnTotals(atPro)).not.toEqual(turnTotals(atFlash))
-    expect(rateTableOf(atFlash)).toBe('$0.15')
-    expect(rateTableOf(atPro)).toBe('$0.66')
+    expect(rateTableOf(atFlash)).toBe('¥1')
+    expect(rateTableOf(atPro)).toBe('¥4.5')
   })
 
   it('falls back to the bundled official snapshot and reports a corrupt blob', () => {
@@ -360,17 +360,20 @@ describe('rendered tab', () => {
   })
 
   it('shows a plan’s amounts in its own currency and drops cross-currency ratios', () => {
+    // The shipped plans are in yuan; a manual plan kept in dollars is what
+    // makes this comparison span two currencies.
+    const dollarFlash = { ...defaultSettings().plans[0]!, id: 'manual:usd', name: 'flash $', currency: 'USD' as const }
     const yuanFlash = {
       id: 'manual:yuan',
       name: 'flash 元',
-      source: 'manual',
-      provider: 'deepseek-official',
+      source: 'manual' as const,
+      provider: 'deepseek-official' as const,
       modelIds: ['deepseek-flash'],
-      currency: 'CNY',
+      currency: 'CNY' as const,
       schedule: null,
       ratesPerMillion: { offPeak: { cacheMiss: '1', cacheHit: '0.02', output: '4' } },
-    } as const
-    const catalog = { ...defaultSettings(), plans: [defaultSettings().plans[0]!, yuanFlash], selectedPlanId: 'manual:yuan' }
+    }
+    const catalog = { ...defaultSettings(), plans: [dollarFlash, yuanFlash], selectedPlanId: 'manual:yuan' }
     const markup = renderToStaticMarkup(<PriceMonitorTab {...tabProps(storeWith(catalog).store, LEDGER)} />)
 
     // A flat ¥1 / ¥0.02 / ¥4 plan over the fixture ledger: turn 1 contributes
@@ -378,7 +381,8 @@ describe('rendered tab', () => {
     // attempt still excluded.
     expect(heroTotal(markup, '¥')).toBeCloseTo(1 + 2 * 0.02 + 0.5 * 4 + 0.1 + 0.01 * 4, 8)
     expect(markup).toContain('¥1')
-    expect(markup).not.toContain('$0.150000')
+    // The dollar plan is still listed, in its own currency.
+    expect(markup).toContain('$')
     // The comparison spans two currencies, so it lists both totals without a
     // percentage that would divide yuan by dollars.
     expect(markup).toContain(`${en['plan.compare']}`)

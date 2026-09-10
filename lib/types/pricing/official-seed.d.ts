@@ -4,16 +4,20 @@
  * a live price oracle: the UI shows the fetch date and a link to the source,
  * and the host route refreshes it (see stage D) into new immutable versions.
  *
- * Snapshot date 2026-09-10, source https://api-docs.deepseek.com/quick_start/pricing/,
- * all rates in USD per million tokens. Peak windows are UTC, Monday–Friday,
- * 01:00–04:00 and 06:00–10:00 (left-closed, right-open).
+ * Snapshot date 2026-09-10, source
+ * https://api-docs.deepseek.com/zh-cn/quick_start/pricing/, all rates in CNY
+ * per million tokens — the Chinese page prints the primary numbers and the
+ * English page prints their rounded USD conversion, so this snapshot keeps the
+ * former and converts nothing. Peak windows are UTC, Monday–Friday,
+ * 01:00–04:00 and 06:00–10:00 (left-closed, right-open), which the page states
+ * as Beijing time 09:00–12:00 and 14:00–18:00.
  *
  * The page lists two priced models — the flash model (DeepSeek-V4.1-Flash on
- * this snapshot) and the pro model — and one flash price. Vision is a
- * capability of that flash model rather than a separate price line, so one
- * plan covers the ids the flash model has been listed or reported under
- * ({@link FLASH_MODEL_IDS}). Availability and naming change without notice;
- * the refresh route is the way to re-read them.
+ * this snapshot) and the pro model. Vision is a capability of that flash model
+ * rather than a separate price line, so one plan covers the ids the flash
+ * model has been listed or reported under ({@link FLASH_MODEL_IDS}).
+ * Availability and naming change without notice; the refresh route is the way
+ * to re-read them.
  *
  * @module dsh-price-monitor/pricing/official-seed
  */

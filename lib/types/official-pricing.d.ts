@@ -3,19 +3,23 @@
  * candidate/diff vocabulary the client uses to preview a refresh before
  * applying it.
  *
- * The page is a Docusaurus table transposed so models are columns and pricing
- * categories are rows, with rowspan carrying the label cells down. The parser
- * reconstructs a rectangular grid, locates the model header and the three
- * priced categories (cache hit / cache miss / output) across the off-peak and
- * peak bands, and validates the structure strictly — a changed header, a
- * missing category, a malformed amount, a broken peak/off-peak 2x relation, or
- * a different peak-window footnote all fail, so a changed page can never be
- * half-imported over the last good catalog.
+ * The parser reads the Chinese page, whose prices are the primary published
+ * numbers in CNY; the English page prints the same rates as a rounded USD
+ * conversion, and nothing here converts anything. The page is a Docusaurus
+ * table transposed so models are columns and pricing categories are rows, with
+ * rowspan carrying the label cells down. The parser reconstructs a rectangular
+ * grid, locates the model header and the three priced categories (cache hit /
+ * cache miss / output) across the off-peak and peak bands, and validates the
+ * structure strictly — a changed header, a missing category, a malformed
+ * amount, a broken peak/off-peak 2x relation, or a different peak-window
+ * footnote all fail, so a changed page can never be half-imported over the last
+ * good catalog.
  *
  * This module is node-free: the host route adds hashing and the network fetch.
  *
  * @module dsh-price-monitor/official-pricing
  */
+import type { Currency } from './pricing/schema.ts';
 /** One parsed model's four rates (per million tokens, decimal strings). */
 export interface OfficialModelRates {
     readonly model: string;
@@ -30,10 +34,14 @@ export interface OfficialModelRates {
 export interface ParsedOfficialPricing {
     readonly models: readonly OfficialModelRates[];
     readonly peakWindows: readonly [readonly [string, string], readonly [string, string]];
+    /** The currency the page printed (CNY on the Chinese page). */
+    readonly currency: Currency;
 }
 /** The candidate the host route returns for client preview. */
 export interface OfficialPricingCandidate {
     readonly models: readonly OfficialModelRates[];
+    readonly peakWindows: readonly [readonly [string, string], readonly [string, string]];
+    readonly currency: Currency;
     readonly fetchedAt: string;
     readonly contentHash: string;
     readonly sourceUrl: string;

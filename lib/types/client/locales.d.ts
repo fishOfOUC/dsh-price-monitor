@@ -88,6 +88,7 @@ export declare const en: {
     readonly 'refresh.noChange': "No change against the bundled snapshot.";
     readonly 'refresh.hash': "Content hash {hash}";
     readonly 'refresh.confirm': "Apply as new official versions";
+    readonly 'refresh.applyNote': "Applying replaces your official plans with these versions. Manual plans are kept.";
     readonly 'settings.title': "Price monitor plans";
     readonly 'settings.hint': "Official plans are read-only; duplicate one to edit its rates.";
     readonly 'settings.selected': "Selected plan";
@@ -109,7 +110,7 @@ export declare const en: {
     readonly 'settings.peakMiss': "Peak miss";
     readonly 'settings.peakHit': "Peak hit";
     readonly 'settings.peakOutput': "Peak output";
-    readonly 'settings.currencyNote': "A plan keeps the currency its publisher printed: DeepSeek publishes USD in English and CNY in Chinese, and the two are not the same numbers. Nothing is converted, so an amount always reads in the selected plan’s currency.";
+    readonly 'settings.currencyNote': "Official pricing comes from DeepSeek’s Chinese page, so it is in CNY. A plan keeps the currency it was saved in and nothing is converted, so an amount always reads in the selected plan’s currency.";
     readonly 'settings.deleteConfirm': "Delete this plan?";
     readonly 'settings.lastPlan': "The last remaining plan cannot be deleted.";
     readonly 'settings.invalidRates': "Every rate must be a non-negative decimal.";

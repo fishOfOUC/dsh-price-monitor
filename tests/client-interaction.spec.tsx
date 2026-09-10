@@ -190,7 +190,7 @@ describe('plan switching', () => {
     expect(writes).toHaveLength(1)
     expect(node.textContent).toContain(target.name)
     // The plan card now shows the selected plan's own rates.
-    expect(node.textContent).toContain(`$${target.ratesPerMillion.offPeak.output}`)
+    expect(node.textContent).toContain(`¥${target.ratesPerMillion.offPeak.output}`)
   })
 
   it('surfaces a failed write instead of silently keeping the old selection', async () => {
@@ -299,16 +299,16 @@ describe('plan switching reprices the tab', () => {
     const rows = (): string[] => [...node.querySelectorAll('.dpm-turn__cost')].map(element => element.textContent ?? '')
     const rates = (): string => (node.querySelector('.dpm-table') as HTMLElement).textContent ?? ''
 
-    // 1M cache-miss tokens off-peak: $0.15 at the flash rates, $0.66 at pro's.
-    expect(hero()).toBe('$0.150000')
-    expect(rows()).toEqual(['$0.150000'])
+    // 1M cache-miss tokens off-peak: ¥1 at the flash rates, ¥4.5 at pro's.
+    expect(hero()).toBe('¥1.000000')
+    expect(rows()).toEqual(['¥1.000000'])
     const flashRates = rates()
 
     const chips = [...node.querySelectorAll('.dpm-chip')] as HTMLElement[]
     await act(async () => { chips.find(element => element.textContent === pro.name)!.click() })
 
-    expect(hero()).toBe('$0.660000')
-    expect(rows()).toEqual(['$0.660000'])
+    expect(hero()).toBe('¥4.500000')
+    expect(rows()).toEqual(['¥4.500000'])
     expect(rates()).not.toBe(flashRates)
     // The attempt with no reported usage stays out of the money either way.
     expect(node.textContent).toContain(en['total.known'])

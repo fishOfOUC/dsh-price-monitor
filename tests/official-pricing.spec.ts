@@ -1,78 +1,87 @@
 /**
- * Official-pricing parser tests: the saved fixture parses exactly, and any
- * structural change (amount, category, header, footnote windows) fails so the
- * caller keeps the last good catalog.
+ * Official-pricing parser tests: the saved Chinese page parses exactly (and
+ * agrees with the shipped seed), and any structural change (amount, category,
+ * header, footnote windows) fails so the caller keeps the last good catalog.
  */
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { diffOfficialPricing, parseOfficialPricing } from '../src/official-pricing.ts'
+import { officialSeedPlans } from '../src/pricing/official-seed.ts'
 
 const fixture = readFileSync(fileURLToPath(new URL('../fixtures/official-pricing.html', import.meta.url)), 'utf8')
-/** The page as served later the same day: two models, `deepseek-flash` renamed. */
-const twoModelFixture = readFileSync(
-  fileURLToPath(new URL('../fixtures/official-pricing-two-model.html', import.meta.url)),
-  'utf8',
-)
+
+/** The page's two priced models, in CNY per million tokens. */
+const PAGE_MODELS = [
+  { model: 'deepseek-flash', cacheHit: '0.02', peakCacheHit: '0.04', cacheMiss: '1', peakCacheMiss: '2', output: '4', peakOutput: '8' },
+  { model: 'deepseek-v4-pro', cacheHit: '0.15', peakCacheHit: '0.3', cacheMiss: '4.5', peakCacheMiss: '9', output: '13.5', peakOutput: '27' },
+]
 
 describe('official pricing parser', () => {
-  it('parses the saved fixture into the three models with exact rates', () => {
+  it('parses the saved page into the two models with exact yuan rates', () => {
     const parsed = parseOfficialPricing(fixture)
     expect(parsed).toBeDefined()
-    expect(parsed!.models).toEqual([
-      { model: 'deepseek-v4-flash', cacheHit: '0.007', peakCacheHit: '0.014', cacheMiss: '0.22', peakCacheMiss: '0.44', output: '0.66', peakOutput: '1.32' },
-      { model: 'deepseek-v4-pro', cacheHit: '0.022', peakCacheHit: '0.044', cacheMiss: '0.66', peakCacheMiss: '1.32', output: '1.98', peakOutput: '3.96' },
-      { model: 'deepseek-v4-flash-vision-exp', cacheHit: '0.007', peakCacheHit: '0.014', cacheMiss: '0.22', peakCacheMiss: '0.44', output: '0.66', peakOutput: '1.32' },
-    ])
+    expect(parsed!.models).toEqual(PAGE_MODELS)
+    expect(parsed!.currency).toBe('CNY')
+    // The page states its peak hours in Beijing time; the schedule prices in UTC.
     expect(parsed!.peakWindows).toEqual([['01:00', '04:00'], ['06:00', '10:00']])
   })
 
-  it('parses the renamed two-model layout, dropping footnote superscripts', () => {
-    // The page later stopped listing a vision column (vision is now a feature
-    // row of flash) and renamed the flash column to `deepseek-flash<sup>(1)</sup>`.
-    const parsed = parseOfficialPricing(twoModelFixture)
-    expect(parsed).toBeDefined()
-    expect(parsed!.models).toEqual([
-      { model: 'deepseek-flash', cacheHit: '0.003', peakCacheHit: '0.006', cacheMiss: '0.15', peakCacheMiss: '0.3', output: '0.6', peakOutput: '1.2' },
-      { model: 'deepseek-v4-pro', cacheHit: '0.022', peakCacheHit: '0.044', cacheMiss: '0.66', peakCacheMiss: '1.32', output: '1.98', peakOutput: '3.96' },
-    ])
-    expect(parsed!.peakWindows).toEqual([['01:00', '04:00'], ['06:00', '10:00']])
+  it('drops the footnote superscript from a model id', () => {
+    // The page writes `deepseek-flash<sup>(1)</sup>`; the id itself has no
+    // footnote in it.
+    expect(parseOfficialPricing(fixture)!.models[0]!.model).toBe('deepseek-flash')
+    expect(parseOfficialPricing(fixture.replace('>deepseek-flash<sup>', '>deepseek flash<sup>'))).toBeUndefined()
   })
 
-  it('still refuses a genuinely malformed model id in that layout', () => {
-    expect(parseOfficialPricing(twoModelFixture.replace('>deepseek-flash<sup>', '>deepseek flash<sup>'))).toBeUndefined()
+  it('agrees with the shipped seed, so a refresh of an unchanged page is empty', () => {
+    // The seed is a hand-kept copy of this page: if they ever disagree, the
+    // refresh would report a change the user cannot act on.
+    expect(diffOfficialPricing(officialSeedPlans.map(plan => ({
+      model: plan.modelIds[0]!,
+      cacheHit: plan.ratesPerMillion.offPeak.cacheHit,
+      cacheMiss: plan.ratesPerMillion.offPeak.cacheMiss,
+      output: plan.ratesPerMillion.offPeak.output,
+      peakCacheHit: plan.ratesPerMillion.peak!.cacheHit,
+      peakCacheMiss: plan.ratesPerMillion.peak!.cacheMiss,
+      peakOutput: plan.ratesPerMillion.peak!.output,
+    })), parseOfficialPricing(fixture)!.models)).toEqual({ addedModels: [], removedModels: [], changed: [] })
+    for (const plan of officialSeedPlans) expect(plan.currency).toBe('CNY')
   })
 
   it('rejects a changed amount (breaks the peak/off-peak 2x relation)', () => {
-    expect(parseOfficialPricing(fixture.replace('$0.014', '$0.015'))).toBeUndefined()
+    expect(parseOfficialPricing(fixture.replace('>0.04元<', '>0.05元<'))).toBeUndefined()
   })
 
   it('rejects a missing pricing category', () => {
-    expect(parseOfficialPricing(fixture.replace('(CACHE MISS)', '(FOO)'))).toBeUndefined()
+    expect(parseOfficialPricing(fixture.replace('（缓存未命中）', '（其他）'))).toBeUndefined()
   })
 
   it('rejects a malformed amount', () => {
-    expect(parseOfficialPricing(fixture.replace('$0.007', 'free'))).toBeUndefined()
+    expect(parseOfficialPricing(fixture.replace('>0.02元<', '>免费<'))).toBeUndefined()
+    // A dollar figure is not this page's unit.
+    expect(parseOfficialPricing(fixture.replace('>0.02元<', '>$0.02<'))).toBeUndefined()
   })
 
   it('rejects a changed model header', () => {
-    expect(parseOfficialPricing(fixture.replace('>MODEL<', '>PRODUCTS<'))).toBeUndefined()
+    expect(parseOfficialPricing(fixture.replace('>模型<', '>产品<' ))).toBeUndefined()
   })
 
   it('rejects a changed peak-window footnote', () => {
-    expect(parseOfficialPricing(fixture.replace('01:00 - 04:00', '02:00 - 04:00'))).toBeUndefined()
+    expect(parseOfficialPricing(fixture.replace('9:00 - 12:00', '10:00 - 12:00'))).toBeUndefined()
+    expect(parseOfficialPricing(fixture.replace('周一至周五', '每天'))).toBeUndefined()
   })
 })
 
 describe('official pricing diff', () => {
   const previous = [
-    { model: 'a', cacheHit: '0.007', peakCacheHit: '0.014', cacheMiss: '0.22', peakCacheMiss: '0.44', output: '0.66', peakOutput: '1.32' },
-    { model: 'b', cacheHit: '0.022', peakCacheHit: '0.044', cacheMiss: '0.66', peakCacheMiss: '1.32', output: '1.98', peakOutput: '3.96' },
+    { model: 'a', cacheHit: '0.02', peakCacheHit: '0.04', cacheMiss: '1', peakCacheMiss: '2', output: '4', peakOutput: '8' },
+    { model: 'b', cacheHit: '0.15', peakCacheHit: '0.3', cacheMiss: '4.5', peakCacheMiss: '9', output: '13.5', peakOutput: '27' },
   ]
   const candidate = [
-    { model: 'a', cacheHit: '0.007', peakCacheHit: '0.014', cacheMiss: '0.22', peakCacheMiss: '0.44', output: '0.70', peakOutput: '1.40' },
-    { model: 'c', cacheHit: '0.007', peakCacheHit: '0.014', cacheMiss: '0.22', peakCacheMiss: '0.44', output: '0.66', peakOutput: '1.32' },
+    { model: 'a', cacheHit: '0.02', peakCacheHit: '0.04', cacheMiss: '1', peakCacheMiss: '2', output: '5', peakOutput: '10' },
+    { model: 'c', cacheHit: '0.02', peakCacheHit: '0.04', cacheMiss: '1', peakCacheMiss: '2', output: '4', peakOutput: '8' },
   ]
 
   it('reports added, removed and changed models field-by-field', () => {
@@ -80,8 +89,8 @@ describe('official pricing diff', () => {
     expect(diff.addedModels).toEqual(['c'])
     expect(diff.removedModels).toEqual(['b'])
     expect(diff.changed).toEqual([
-      { model: 'a', field: 'output', before: '0.66', after: '0.70' },
-      { model: 'a', field: 'peakOutput', before: '1.32', after: '1.40' },
+      { model: 'a', field: 'output', before: '4', after: '5' },
+      { model: 'a', field: 'peakOutput', before: '8', after: '10' },
     ])
   })
 })

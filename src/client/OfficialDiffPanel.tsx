@@ -32,7 +32,7 @@ function plansFromCandidate(candidate: OfficialPricingCandidate): PricingPlan[] 
   const schedule = {
     timezone: 'UTC' as const,
     peakWeekdays: [1, 2, 3, 4, 5],
-    peakWindows: [['01:00', '04:00'], ['06:00', '10:00']] as [string, string][],
+    peakWindows: candidate.peakWindows.map(window => [...window]) as [string, string][],
   }
   const observedOn = candidate.fetchedAt.slice(0, 10)
   return candidate.models.map(model => ({
@@ -43,7 +43,7 @@ function plansFromCandidate(candidate: OfficialPricingCandidate): PricingPlan[] 
     // The flash model is still matched by the ids it has been reported under
     // (the seed and a refreshed catalog must agree on coverage).
     modelIds: expandOfficialModelIds(model.model),
-    currency: 'USD' as const,
+    currency: candidate.currency,
     // No declared start: a fetch learns today's rates, not when they began.
     // A later-fetched version supersedes this one by its observation time.
     schedule,
@@ -137,16 +137,19 @@ export function OfficialDiffPanel({ onClose, store }: OfficialDiffPanelProps): R
           {applied
             ? <p className="dpm-note">{t('settings.selected')}</p>
             : (
-              <div className="dpm-buttons">
-                <button type="button" className="dpm-button" onClick={onClose}>{t('action.cancel')}</button>
-                <button
-                  type="button"
-                  className="dpm-button dpm-button--primary"
-                  onClick={() => apply(state.candidate)}
-                >
-                  {t('refresh.confirm')}
-                </button>
-              </div>
+              <>
+                <div className="dpm-buttons">
+                  <button type="button" className="dpm-button" onClick={onClose}>{t('action.cancel')}</button>
+                  <button
+                    type="button"
+                    className="dpm-button dpm-button--primary"
+                    onClick={() => apply(state.candidate)}
+                  >
+                    {t('refresh.confirm')}
+                  </button>
+                </div>
+                <p className="dpm-note">{t('refresh.applyNote')}</p>
+              </>
             )}
         </div>
       )}
