@@ -469,7 +469,15 @@ function TurnsSection({ turns, t, currency, openTurn, onToggle }: {
 
 /** One attempt's three bucket lines, or its unpriced reason. */
 function AttemptRows({ attempt, t, currency }: { attempt: PricedAttempt; t: Translate; currency: Currency }): React.ReactElement {
-  const label = `${t('turns.attempt', { attempt: attempt.row.attempt })} · ${attempt.row.model ?? t('turns.noRoute')}`
+  // One step is one model call, and the loop numbers a turn's steps 1..N, so
+  // the step is the request's ordinal within the turn. `attempt` only counts
+  // retries inside that step (0 for an unretried request), so naming the row by
+  // it made every row read "request 0"; it now marks a retry instead.
+  const label = [
+    t('turns.request', { request: attempt.row.step }),
+    attempt.row.attempt === 0 ? '' : t('turns.retry', { retry: attempt.row.attempt }),
+    attempt.row.model ?? t('turns.noRoute'),
+  ].filter(part => part !== '').join(' · ')
   if (attempt.cost === undefined) {
     // An unpriced attempt still names its route: "which model had no plan" is
     // the actionable part of the message.

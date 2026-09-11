@@ -62,7 +62,8 @@ export declare const en: {
     readonly 'turns.turn': "Turn {turn}";
     readonly 'turns.peak': "Peak";
     readonly 'turns.offPeak': "Off-peak";
-    readonly 'turns.attempt': "attempt {attempt}";
+    readonly 'turns.request': "request {request}";
+    readonly 'turns.retry': "retry {retry}";
     readonly 'turns.subtotal': "Subtotal";
     readonly 'turns.noRoute': "no model";
     readonly 'turns.unpriced': "not priced";

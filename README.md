@@ -37,8 +37,10 @@ it: the ledger has no UI besides that tab.
   exact three-bucket split (cache miss / cache hit / output) in both tokens and
   money, in the plan's own currency.
 - **Per-turn list**: every turn with its tokens and cost, expandable to each
-  billed request attempt — including attempts that retried, switched model, or
-  cannot be priced.
+  billed request — including requests that retried, switched model, or cannot be
+  priced. One request is one model call, i.e. one harness step, and the loop
+  numbers a turn's steps 1..N, so a row reads "request N". A retried request
+  keeps that number and gains "retry N" rather than appearing as an extra step.
 - **Plan card** with the selected plan's rates and a same-tokens comparison
   across every saved plan.
 - **Partial honesty**: an attempt whose usage never arrived or failed
@@ -309,5 +311,5 @@ settings panel. The bundled official snapshot is the offline default.
 | `tests/official-pricing.spec.ts` | both saved page fixtures (three-column and the renamed two-model layout) parse exactly; changed amounts, categories, headers, malformed ids, or footnote windows fail |
 | `tests/trust-fence.spec.ts` | loopback/trusted hosts pass; cross-site, opaque, and mismatched origins fail |
 | `tests/client.spec.tsx` | activation and the feature gate, catalog reads (including the v1 upgrade), the hero total equal to the sum of the turn rows, and a plan switch repricing hero, breakdown, and rows |
-| `tests/client-interaction.spec.tsx` | expanding a turn reveals each attempt; clicking a plan writes the catalog and reprices the rendered tab; the plan form edits one rate table per model group; a failed write surfaces |
+| `tests/client-interaction.spec.tsx` | expanding a turn numbers each request by its step and marks a retry; clicking a plan writes the catalog and reprices the rendered tab; the plan form edits one rate table per model group; a failed write surfaces |
 | `tests/built-artifacts.spec.ts` | the built entry points exist and behave; the client bundle is a valid loader factory; the route over real HTTP refuses GET/cross-site/foreign redirects and returns a candidate plus diff |

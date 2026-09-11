@@ -41,9 +41,9 @@ const LEDGER: PriceMonitorUsageView = {
     complete: true,
     attempts: [
       {
-        id: '7:0:0',
+        id: '7:1:0',
         turn: 7,
-        step: 0,
+        step: 1,
         attempt: 0,
         startedAt: Date.UTC(2026, 8, 14, 20, 0),
         settledAt: Date.UTC(2026, 8, 14, 20, 1),
@@ -56,9 +56,9 @@ const LEDGER: PriceMonitorUsageView = {
         completeness: 'complete',
       },
       {
-        id: '7:1:0',
+        id: '7:2:0',
         turn: 7,
-        step: 1,
+        step: 2,
         attempt: 0,
         startedAt: Date.UTC(2026, 8, 14, 20, 2),
         provider: 'deepseek-official',
@@ -112,8 +112,8 @@ function makeStore(catalog: unknown): { store: SidebarStore; writes: SidebarPref
 }
 
 /** Render the tab and return the container. */
-function render(store: SidebarStore): HTMLDivElement {
-  const face = { getSnapshot: () => LEDGER, subscribe: () => () => {} }
+function render(store: SidebarStore, ledger: PriceMonitorUsageView = LEDGER): HTMLDivElement {
+  const face = { getSnapshot: () => ledger, subscribe: () => () => {} }
   const ctx = {
     sessions: { binding: () => ({ session: { projections: { faceOf: () => face } } }) },
   } as unknown as CordisContext
@@ -138,13 +138,24 @@ const clicks = (node: HTMLElement, selector: string): void => {
 }
 
 describe('turn expansion', () => {
+  it('numbers each request of the turn by its step', () => {
+    const { store } = makeStore(defaultSettings())
+    const node = render(store)
+    act(() => { (node.querySelector('.dpm-turn') as HTMLElement).click() })
+    // The two rows are steps 1 and 2 of turn 7, so they read as the 1st and 2nd
+    // request. Naming them by the retry counter made both read "request 0".
+    expect(node.textContent).toContain(en['turns.request'].replace('{request}', '1'))
+    expect(node.textContent).toContain(en['turns.request'].replace('{request}', '2'))
+    expect(node.textContent).not.toContain(en['turns.request'].replace('{request}', '0'))
+  })
+
   it('reveals every attempt, its model, and the unpriced reason', () => {
     const { store } = makeStore(defaultSettings())
     const node = render(store)
     // Collapsed: the detail rows are absent and aria-expanded is false.
     const turn = node.querySelector('.dpm-turn') as HTMLElement
     expect(turn.getAttribute('aria-expanded')).toBe('false')
-    expect(node.textContent).not.toContain(en['turns.attempt'])
+    expect(node.textContent).not.toContain(en['turns.request'].replace('{request}', '1'))
 
     act(() => { turn.click() })
     const expanded = node.querySelector('.dpm-turn') as HTMLElement
@@ -160,6 +171,25 @@ describe('turn expansion', () => {
     act(() => { (node.querySelector('.dpm-turn') as HTMLElement).click() })
     expect((node.querySelector('.dpm-turn') as HTMLElement).getAttribute('aria-expanded')).toBe('false')
     expect(node.textContent).not.toContain(en['turns.subtotal'])
+  })
+
+  it('marks a retry of the same step instead of numbering it as another request', () => {
+    const retried: PriceMonitorUsageView = {
+      turns: [{
+        ...LEDGER.turns[0]!,
+        attempts: [
+          { ...LEDGER.turns[0]!.attempts[0]!, id: '7:1:0', step: 1, attempt: 0 },
+          { ...LEDGER.turns[0]!.attempts[0]!, id: '7:1:1', step: 1, attempt: 1 },
+        ],
+      }],
+    }
+    const { store } = makeStore(defaultSettings())
+    const node = render(store, retried)
+    act(() => { (node.querySelector('.dpm-turn') as HTMLElement).click() })
+    // Both rows belong to the turn's first request; the second says so.
+    expect(node.textContent).toContain(en['turns.request'].replace('{request}', '1'))
+    expect(node.textContent).toContain(en['turns.retry'].replace('{retry}', '1'))
+    expect(node.textContent).not.toContain(en['turns.request'].replace('{request}', '2'))
   })
 })
 

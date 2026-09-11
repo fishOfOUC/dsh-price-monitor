@@ -38,9 +38,9 @@ const LEDGER: PriceMonitorUsageView = {
       endedAt: Date.UTC(2026, 8, 14, 1, 31),
       complete: true,
       attempts: [{
-        id: '1:0:0',
+        id: '1:1:0',
         turn: 1,
-        step: 0,
+        step: 1,
         attempt: 0,
         startedAt: Date.UTC(2026, 8, 14, 1, 30),
         settledAt: Date.UTC(2026, 8, 14, 1, 31),
@@ -60,9 +60,9 @@ const LEDGER: PriceMonitorUsageView = {
       complete: true,
       attempts: [
         {
-          id: '2:0:0',
+          id: '2:1:0',
           turn: 2,
-          step: 0,
+          step: 1,
           attempt: 0,
           startedAt: Date.UTC(2026, 8, 14, 20, 0),
           settledAt: Date.UTC(2026, 8, 14, 20, 1),
@@ -77,9 +77,9 @@ const LEDGER: PriceMonitorUsageView = {
         {
           // An attempt whose usage never arrived: no tokens to price at all,
           // so the total is partial whatever plan is selected.
-          id: '2:1:0',
+          id: '2:2:0',
           turn: 2,
-          step: 1,
+          step: 2,
           attempt: 0,
           startedAt: Date.UTC(2026, 8, 14, 20, 2),
           provider: 'deepseek-official',
@@ -311,9 +311,9 @@ describe('rendered tab', () => {
         endedAt: Date.UTC(2026, 8, 14, 20, 1),
         complete: true,
         attempts: [{
-          id: '1:0:0',
+          id: '1:1:0',
           turn: 1,
-          step: 0,
+          step: 1,
           attempt: 0,
           startedAt: Date.UTC(2026, 8, 14, 20, 0),
           provider: 'deepseek-official',
@@ -342,9 +342,9 @@ describe('rendered tab', () => {
         endedAt: Date.UTC(2026, 8, 14, 12, 1),
         complete: true,
         attempts: [{
-          id: '1:0:0',
+          id: '1:1:0',
           turn: 1,
-          step: 0,
+          step: 1,
           attempt: 0,
           startedAt: Date.UTC(2026, 8, 14, 12, 0),
           provider: 'deepseek-official',
